@@ -1,0 +1,45 @@
+[package]
+name = "ruxmsg"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Protocol library for the RUXMSG/1 terminal messaging protocol"
+license = "MIT OR Apache-2.0"
+repository = "https://example.invalid/ruxmsg"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+bip39 = { version = "2.2", default-features = false, features = ["std"] }
+chacha20poly1305 = "0.10"
+ciborium = "0.2"
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
+ed25519-dalek = { version = "2.1", features = ["rand_core", "zeroize"] }
+hkdf = "0.12"
+hmac = "0.12"
+keyring = { version = "3.6.3", features = ["sync-secret-service"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+ratatui = "0.29.0"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+subtle = "2.6"
+thiserror = "2"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+zeroize = { version = "1.8", features = ["derive"] }
+
+[dev-dependencies]
+proptest = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"
+correctness = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"

@@ -1,0 +1,55 @@
+[package]
+name = "ruxmsg-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+ruxmsg = { path = ".." }
+
+[[bin]]
+name = "frame_decode"
+path = "fuzz_targets/frame_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame_cbor"
+path = "fuzz_targets/frame_cbor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake_decode"
+path = "fuzz_targets/handshake_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "data_decrypt"
+path = "fuzz_targets/data_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "close_decode"
+path = "fuzz_targets/close_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session_lifecycle"
+path = "fuzz_targets/session_lifecycle.rs"
+test = false
+doc = false
+bench = false
