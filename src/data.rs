@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::protocol::{
     DEFAULT_PADDING_QUANTUM, DirectionId, MAX_FRAME_SIZE, MessageType, SessionId,
 };
-use crate::ratchet::{ReceivingChain, ReplayWindow};
+use crate::ratchet::{ReceivingChain, ReplayStatus, ReplayWindow};
 use crate::wire::Frame;
 
 const AEAD_TAG_SIZE: usize = 16;
@@ -37,25 +37,33 @@ impl DataPlaintext {
     /// the configured padding quantum.
     pub fn padded(content: &[u8]) -> Result<Self> {
         let mut padding_len = 0usize;
+
         loop {
             let candidate = Self {
                 content: content.to_vec(),
                 padding: vec![0; padding_len],
             };
+
             let encoded = candidate.encode()?;
+
             let target = encoded
                 .len()
                 .checked_add(AEAD_TAG_SIZE)
                 .ok_or(Error::DataTooLarge)?;
+
             let rounded = target.div_ceil(DEFAULT_PADDING_QUANTUM) * DEFAULT_PADDING_QUANTUM;
+
             let next = rounded
                 .checked_sub(AEAD_TAG_SIZE)
                 .and_then(|size| size.checked_sub(encoded.len() - padding_len))
                 .ok_or(Error::DataTooLarge)?;
+
             if next == padding_len {
                 return Ok(candidate);
             }
+
             padding_len = next;
+
             if padding_len > MAX_FRAME_SIZE as usize {
                 return Err(Error::DataTooLarge);
             }
@@ -68,39 +76,51 @@ impl DataPlaintext {
             (uint(0u64), Value::Bytes(self.content.clone())),
             (uint(1u64), Value::Bytes(self.padding.clone())),
         ]);
+
         let mut output = Vec::new();
+
         ciborium::ser::into_writer(&value, &mut output)
             .map_err(|error| Error::Encoding(error.to_string()))?;
+
         Ok(output)
     }
 
     /// Decodes and validates content/padding after AEAD authentication.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         Frame::new(MessageType::Data, bytes.to_vec())?.validate_cbor_map()?;
+
         let value: Value =
             ciborium::de::from_reader(bytes).map_err(|error| Error::Encoding(error.to_string()))?;
+
         let Value::Map(entries) = value else {
             return Err(Error::InvalidDataPayload);
         };
+
         if entries.len() != 2 {
             return Err(Error::InvalidDataPayload);
         }
+
         let mut content = None;
         let mut padding = None;
+
         for (key, value) in entries {
             let Value::Integer(key) = key else {
                 return Err(Error::InvalidDataPayload);
             };
+
             match u64::try_from(key).map_err(|_| Error::InvalidDataPayload)? {
                 0 => content = Some(bytes_value(value)?),
                 1 => padding = Some(bytes_value(value)?),
                 _ => return Err(Error::InvalidDataPayload),
             }
         }
+
         let padding = padding.ok_or(Error::InvalidDataPayload)?;
+
         if padding.iter().any(|byte| *byte != 0) {
             return Err(Error::InvalidPadding);
         }
+
         Ok(Self {
             content: content.ok_or(Error::InvalidDataPayload)?,
             padding,
@@ -140,17 +160,24 @@ impl DataSender {
     /// Encrypts one message and advances the directional chain and counter.
     pub fn encrypt(&mut self, content: &[u8]) -> Result<Frame> {
         let counter = self.counter;
+
         let plaintext = DataPlaintext::padded(content)?.encode()?;
+
         let (message_key, next_chain) = derive_message_key(&self.chain_key, self.direction);
+
         let aad = data_aad(self.session_id, self.direction, counter)?;
+
         let ciphertext = encrypt_message(
             &message_key,
             &message_nonce(self.direction, counter),
             &aad,
             &plaintext,
         )?;
+
         self.chain_key = next_chain;
+
         self.counter = self.counter.checked_add(1).ok_or(Error::CounterOverflow)?;
+
         encode_payload(DataPayload {
             session_id: self.session_id,
             direction_id: self.direction,
@@ -164,6 +191,7 @@ pub struct DataReceiver {
     session_id: SessionId,
     chain: ReceivingChain,
     replay: ReplayWindow,
+    direction: DirectionId,
 }
 
 impl fmt::Debug for DataReceiver {
@@ -171,6 +199,7 @@ impl fmt::Debug for DataReceiver {
         formatter
             .debug_struct("DataReceiver")
             .field("session_id", &self.session_id)
+            .field("direction", &self.direction)
             .finish_non_exhaustive()
     }
 }
@@ -182,35 +211,70 @@ impl DataReceiver {
             session_id,
             chain: ReceivingChain::new(chain_key, direction),
             replay: ReplayWindow::new(),
+            direction,
         }
     }
 
-    /// Authenticates, replay-checks, decrypts, and returns one DATA message.
+    /// Authenticates, replay-checks, decrypts, validates, and returns one
+    /// DATA message.
+    ///
+    /// Message-key consumption is committed only after AEAD authentication
+    /// and plaintext validation both succeed.
     pub fn decrypt(&mut self, frame: &Frame) -> Result<Vec<u8>> {
         if frame.message_type != MessageType::Data {
             return Err(Error::InvalidDataPayload);
         }
+
         let payload = decode_payload(&frame.payload)?;
+
         if payload.session_id != self.session_id {
             return Err(Error::InvalidDataPayload);
         }
-        if self.replay.classify(payload.message_counter) != crate::ratchet::ReplayStatus::New {
+
+        // The directional chain is fixed for the lifetime of this receiver.
+        // Reject mismatched directions before touching ratchet state.
+        if payload.direction_id != self.direction {
+            return Err(Error::InvalidDataPayload);
+        }
+
+        if self.replay.classify(payload.message_counter) != ReplayStatus::New {
             return Err(Error::ReplayRejected);
         }
-        let message_key = self.chain.message_key(payload.message_counter)?;
+
+        // PREPARE:
+        // Derive or retrieve the key without consuming it. If authentication
+        // fails, the key remains available for a later legitimate frame.
+        let message_key = self.chain.prepare_message_key(payload.message_counter)?;
+
         let aad = data_aad(
             self.session_id,
             payload.direction_id,
             payload.message_counter,
         )?;
+
+        // AUTHENTICATE:
+        // Any failure here leaves the prepared message key untouched.
         let plaintext = decrypt_message(
             &message_key,
             &message_nonce(payload.direction_id, payload.message_counter),
             &aad,
             &payload.ciphertext,
         )?;
+
+        // VALIDATE:
+        // Do not consume the message key until the authenticated plaintext
+        // also satisfies the DATA payload format and padding requirements.
         let decoded = DataPlaintext::decode(&plaintext)?;
+
+        // COMMIT:
+        // This is the first point at which the message key is consumed.
+        self.chain.commit_message_key(payload.message_counter)?;
+
+        // REPLAY COMMIT:
+        // Only authenticated and structurally valid messages enter the replay
+        // window.
         self.replay.accept(payload.message_counter)?;
+
         Ok(decoded.content)
     }
 }
@@ -225,51 +289,73 @@ fn encode_payload(payload: DataPayload) -> Result<Frame> {
         (uint(2u64), uint(payload.message_counter)),
         (uint(3u64), Value::Bytes(payload.ciphertext)),
     ]);
+
     let mut encoded = Vec::new();
+
     ciborium::ser::into_writer(&value, &mut encoded)
         .map_err(|error| Error::Encoding(error.to_string()))?;
+
     Frame::new(MessageType::Data, encoded)
 }
 
 fn decode_payload(bytes: &[u8]) -> Result<DataPayload> {
     Frame::new(MessageType::Data, bytes.to_vec())?.validate_cbor_map()?;
+
     let value: Value =
         ciborium::de::from_reader(bytes).map_err(|error| Error::Encoding(error.to_string()))?;
+
     let Value::Map(entries) = value else {
         return Err(Error::InvalidDataPayload);
     };
+
     if entries.len() != 4 {
         return Err(Error::InvalidDataPayload);
     }
+
     let mut session_id = None;
     let mut direction_id = None;
     let mut counter = None;
     let mut ciphertext = None;
+
     for (key, value) in entries {
         let Value::Integer(key) = key else {
             return Err(Error::InvalidDataPayload);
         };
+
         match u64::try_from(key).map_err(|_| Error::InvalidDataPayload)? {
             0 => {
                 let bytes = bytes_value(value)?;
+
                 session_id = Some(SessionId::from_bytes(
                     bytes.try_into().map_err(|_| Error::InvalidDataPayload)?,
                 ));
             }
+
             1 => {
                 let raw =
                     u32::try_from(uint_value(value)?).map_err(|_| Error::InvalidDataPayload)?;
+
                 direction_id = Some(DirectionId::try_from(raw)?);
             }
-            2 => counter = Some(uint_value(value)?),
-            3 => ciphertext = Some(bytes_value(value)?),
+
+            2 => {
+                counter = Some(uint_value(value)?);
+            }
+
+            3 => {
+                ciphertext = Some(bytes_value(value)?);
+            }
+
             _ => return Err(Error::InvalidDataPayload),
         }
     }
+
     let ciphertext = ciphertext.ok_or(Error::InvalidDataPayload)?;
+
     if ciphertext.len() < AEAD_TAG_SIZE {
         return Err(Error::InvalidDataPayload);
     }
+
     Ok(DataPayload {
         session_id: session_id.ok_or(Error::InvalidDataPayload)?,
         direction_id: direction_id.ok_or(Error::InvalidDataPayload)?,
@@ -286,9 +372,12 @@ fn data_aad(session_id: SessionId, direction: DirectionId, counter: u64) -> Resu
         (uint(3u64), uint(direction as u32)),
         (uint(4u64), uint(counter)),
     ]);
+
     let mut encoded = Vec::new();
+
     ciborium::ser::into_writer(&value, &mut encoded)
         .map_err(|error| Error::Encoding(error.to_string()))?;
+
     Ok(encoded)
 }
 
@@ -300,6 +389,7 @@ fn uint_value(value: Value) -> Result<u64> {
     let Value::Integer(value) = value else {
         return Err(Error::InvalidDataPayload);
     };
+
     u64::try_from(value).map_err(|_| Error::InvalidDataPayload)
 }
 
@@ -307,6 +397,7 @@ fn bytes_value(value: Value) -> Result<Vec<u8>> {
     let Value::Bytes(value) = value else {
         return Err(Error::InvalidDataPayload);
     };
+
     Ok(value)
 }
 
@@ -317,28 +408,83 @@ mod tests {
     #[test]
     fn authenticated_data_round_trip_and_replay_rejection() {
         let id = SessionId::from_bytes([4; 16]);
+
         let mut sender = DataSender::new(id, DirectionId::InitiatorToResponder, [9; 32]);
+
         let mut receiver = DataReceiver::new(id, DirectionId::InitiatorToResponder, [9; 32]);
+
         let frame = sender.encrypt(b"hello").unwrap();
+
         assert_eq!(receiver.decrypt(&frame).unwrap(), b"hello");
         assert_eq!(receiver.decrypt(&frame), Err(Error::ReplayRejected));
     }
 
     #[test]
-    fn tampered_ciphertext_and_padding_are_rejected() {
+    fn tampered_ciphertext_does_not_consume_message_key() {
         let id = SessionId::from_bytes([5; 16]);
+
         let mut sender = DataSender::new(id, DirectionId::ResponderToInitiator, [8; 32]);
+
         let mut receiver = DataReceiver::new(id, DirectionId::ResponderToInitiator, [8; 32]);
-        let mut frame = sender.encrypt(b"secret").unwrap();
-        *frame.payload.last_mut().unwrap() ^= 1;
-        assert_eq!(receiver.decrypt(&frame), Err(Error::AeadFailure));
+
+        let mut tampered = sender.encrypt(b"secret").unwrap();
+
+        *tampered.payload.last_mut().unwrap() ^= 0x01;
+
+        assert_eq!(receiver.decrypt(&tampered), Err(Error::AeadFailure));
+
+        // The same legitimate frame/counter must remain decryptable after
+        // the forged frame failed authentication.
+        let valid = sender.encrypt(b"secret").unwrap();
+
+        assert_eq!(receiver.decrypt(&valid).unwrap(), b"secret");
+    }
+
+    #[test]
+    fn future_tampered_message_does_not_consume_target_key() {
+        let id = SessionId::from_bytes([6; 16]);
+
+        let mut sender = DataSender::new(id, DirectionId::ResponderToInitiator, [8; 32]);
+
+        let mut receiver = DataReceiver::new(id, DirectionId::ResponderToInitiator, [8; 32]);
+
+        let mut frames = Vec::new();
+
+        for _ in 0..6 {
+            frames.push(sender.encrypt(b"secret").unwrap());
+        }
+
+        let mut tampered = frames[5].clone();
+
+        *tampered.payload.last_mut().unwrap() ^= 0x01;
+
+        assert_eq!(receiver.decrypt(&tampered), Err(Error::AeadFailure));
+
+        // Counter 5 was prepared and its key must still be available.
+        assert_eq!(receiver.decrypt(&frames[5]).unwrap(), b"secret");
+    }
+
+    #[test]
+    fn wrong_direction_is_rejected_before_ratchet_use() {
+        let id = SessionId::from_bytes([7; 16]);
+
+        let mut sender = DataSender::new(id, DirectionId::ResponderToInitiator, [8; 32]);
+
+        let mut receiver = DataReceiver::new(id, DirectionId::InitiatorToResponder, [8; 32]);
+
+        let frame = sender.encrypt(b"secret").unwrap();
+
+        assert_eq!(receiver.decrypt(&frame), Err(Error::InvalidDataPayload));
     }
 
     #[test]
     fn padding_accounts_for_serialized_structure_and_tag() {
         let plaintext = DataPlaintext::padded(&[7; 31]).unwrap();
+
         let encoded = plaintext.encode().unwrap();
+
         assert_eq!((encoded.len() + AEAD_TAG_SIZE) % DEFAULT_PADDING_QUANTUM, 0);
+
         assert!(plaintext.padding.iter().all(|byte| *byte == 0));
     }
 }

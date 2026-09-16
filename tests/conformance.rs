@@ -567,11 +567,13 @@ fn phase3_session_confirm_verification() {
 #[test]
 fn phase4_replay_window_sliding_and_boundaries() {
     let mut window = ReplayWindow::new();
+
     assert_eq!(window.highest(), None);
 
     // In-order messages
     window.accept(0).unwrap();
     assert_eq!(window.highest(), Some(0));
+
     window.accept(1).unwrap();
     assert_eq!(window.highest(), Some(1));
 
@@ -582,9 +584,12 @@ fn phase4_replay_window_sliding_and_boundaries() {
     // Out-of-order within 64-window
     window.accept(10).unwrap();
     assert_eq!(window.highest(), Some(10));
+
     assert_eq!(window.classify(5), ReplayStatus::New);
+
     window.accept(5).unwrap();
     assert_eq!(window.classify(5), ReplayStatus::Duplicate);
+
     assert_eq!(window.accept(5), Err(Error::ReplayRejected));
 
     // Boundary at distance 63 (accepted)
@@ -599,35 +604,103 @@ fn phase4_replay_window_sliding_and_boundaries() {
 
     // Large jump shifts window completely
     window.accept(1000).unwrap();
+
     assert_eq!(window.classify(73), ReplayStatus::TooOld);
+}
+
+#[test]
+fn phase4_prepared_key_cache_and_commit_semantics() {
+    let mut chain = ReceivingChain::new([1; 32], DirectionId::InitiatorToResponder);
+
+    assert_eq!(chain.skipped_len(), 0);
+
+    // Preparing counter 5 derives counters 0..5 and retains every
+    // derived key until authentication/commit succeeds.
+    let key_5 = chain.prepare_message_key(5).unwrap();
+
+    // Counters 0..5 are all retained:
+    // 0..4 = skipped/unconsumed
+    // 5    = prepared target awaiting authentication
+    assert_eq!(chain.skipped_len(), 6);
+
+    // Preparing counter 2 retrieves the cached key without deriving
+    // another ratchet step.
+    let key_2 = chain.prepare_message_key(2).unwrap();
+
+    assert_eq!(chain.skipped_len(), 6);
+
+    // The same key remains available until commit.
+    assert_eq!(chain.prepare_message_key(2).unwrap(), key_2);
+    assert_eq!(chain.skipped_len(), 6);
+
+    // Commit consumes only counter 2.
+    chain.commit_message_key(2).unwrap();
+
+    assert_eq!(chain.skipped_len(), 5);
+
+    // A committed key can no longer be recovered.
+    assert_eq!(
+        chain.prepare_message_key(2),
+        Err(Error::MessageKeyUnavailable(2))
+    );
+
+    // The target key also remains recoverable until committed.
+    assert_eq!(chain.prepare_message_key(5).unwrap(), key_5);
+
+    chain.commit_message_key(5).unwrap();
+
+    assert_eq!(chain.skipped_len(), 4);
+
+    assert_eq!(
+        chain.prepare_message_key(5),
+        Err(Error::MessageKeyUnavailable(5))
+    );
 }
 
 #[test]
 fn phase4_skipped_key_cache_and_bounds() {
     let mut chain = ReceivingChain::new([1; 32], DirectionId::InitiatorToResponder);
-    assert_eq!(chain.skipped_len(), 0);
 
-    // Requesting counter 5 derives keys for 0, 1, 2, 3, 4 into skipped cache
-    let _ = chain.message_key(5).unwrap();
+    // Requesting counter 5 derives keys for 0..5.
+    //
+    // The target key is now retained as a pending key as well as
+    // the five preceding skipped keys.
+    let _ = chain.prepare_message_key(5).unwrap();
+
+    assert_eq!(chain.skipped_len(), 6);
+
+    // Arriving out of order: key 2 is retrieved from the pending cache.
+    let _ = chain.prepare_message_key(2).unwrap();
+
+    // Preparing does NOT consume the key.
+    assert_eq!(chain.skipped_len(), 6);
+
+    // Commit explicitly consumes it.
+    chain.commit_message_key(2).unwrap();
+
     assert_eq!(chain.skipped_len(), 5);
 
-    // Arriving out of order: key 2 is retrieved from cache
-    let _ = chain.message_key(2).unwrap();
-    assert_eq!(chain.skipped_len(), 4);
+    // Requesting key 2 again fails because it was committed/consumed.
+    assert_eq!(
+        chain.prepare_message_key(2),
+        Err(Error::MessageKeyUnavailable(2))
+    );
 
-    // Requesting key 2 again fails (key already used/erased)
-    assert_eq!(chain.message_key(2), Err(Error::MessageKeyUnavailable(2)));
-
-    // Requesting gap > 64 fails with SkippedKeyLimit
+    // Requesting a gap > 64 fails with SkippedKeyLimit.
     let mut chain2 = ReceivingChain::new([2; 32], DirectionId::InitiatorToResponder);
-    assert_eq!(chain2.message_key(65), Err(Error::SkippedKeyLimit));
 
-    // Exactly 64 skipped keys is allowed
-    assert!(chain2.message_key(64).is_ok());
-    assert_eq!(chain2.skipped_len(), 64);
+    assert_eq!(chain2.prepare_message_key(65), Err(Error::SkippedKeyLimit));
 
-    // Once 64 keys are cached, further gaps fail
-    assert_eq!(chain2.message_key(66), Err(Error::SkippedKeyLimit));
+    // Exactly 64 gap is allowed.
+    assert!(chain2.prepare_message_key(64).is_ok());
+
+    // With the new prepare semantics, counters 0..64 are retained:
+    // 64 skipped keys + counter 64's pending target key.
+    assert_eq!(chain2.skipped_len(), 65);
+
+    // The ratchet's MAX_SKIPPED_KEYS bound still prevents a further
+    // large jump once the pending cache is full.
+    assert_eq!(chain2.prepare_message_key(66), Err(Error::SkippedKeyLimit));
 }
 
 #[test]
@@ -635,14 +708,19 @@ fn phase4_data_padding_quantum_and_corruption_checks() {
     // Quantum calculation for various sizes
     for size in [0, 1, 10, 100, 230, 256, 500, 1024] {
         let content = vec![0x42; size];
+
         let padded = DataPlaintext::padded(&content).unwrap();
+
         assert_eq!(padded.content, content);
         assert!(padded.padding.iter().all(|&b| b == 0));
+
         let encoded = padded.encode().unwrap();
+
         assert_eq!((encoded.len() + 16) % DEFAULT_PADDING_QUANTUM, 0);
 
         // Decode round-trip
         let decoded = DataPlaintext::decode(&encoded).unwrap();
+
         assert_eq!(decoded.content, content);
     }
 
@@ -651,7 +729,9 @@ fn phase4_data_padding_quantum_and_corruption_checks() {
         content: b"test".to_vec(),
         padding: vec![0, 0, 1, 0],
     };
+
     let encoded_invalid = invalid_padding_plaintext.encode().unwrap();
+
     assert_eq!(
         DataPlaintext::decode(&encoded_invalid),
         Err(Error::InvalidPadding)
@@ -659,24 +739,100 @@ fn phase4_data_padding_quantum_and_corruption_checks() {
 }
 
 #[test]
-fn phase4_aead_tampering_and_aad_modification_rejection() {
+fn phase4_aead_tampering_does_not_consume_message_key() {
     let session_id = SessionId::from_bytes([1; 16]);
+
     let mut sender = DataSender::new(session_id, DirectionId::InitiatorToResponder, [5; 32]);
-    let frame = sender.encrypt(b"secret payload").unwrap();
 
     let mut receiver = DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [5; 32]);
 
-    // Tampered ciphertext payload
+    // Generate ONE legitimate frame.
+    //
+    // This is important: do not generate a second frame after tampering,
+    // because that would have counter 1 and would not prove that counter 0
+    // survived the failed authentication attempt.
+    let frame = sender.encrypt(b"secret payload").unwrap();
+
+    // Attack a copy of counter 0.
     let mut tampered_frame = frame.clone();
+
     if let Some(last) = tampered_frame.payload.last_mut() {
         *last ^= 0x01;
     }
+
+    // Authentication must fail.
     assert_eq!(receiver.decrypt(&tampered_frame), Err(Error::AeadFailure));
 
-    // Valid frame decrypts successfully
-    let mut receiver2 = DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [5; 32]);
-    let plaintext = receiver2.decrypt(&frame).unwrap();
-    assert_eq!(plaintext, b"secret payload");
+    // The ORIGINAL counter-0 frame must still decrypt successfully.
+    //
+    // This is the critical regression test for Finding 1:
+    //
+    //     AEAD failure must NOT consume the message key.
+    assert_eq!(receiver.decrypt(&frame).unwrap(), b"secret payload");
+}
+
+#[test]
+fn phase4_future_counter_tampering_does_not_consume_target_key() {
+    let session_id = SessionId::from_bytes([2; 16]);
+
+    let mut sender = DataSender::new(session_id, DirectionId::InitiatorToResponder, [6; 32]);
+
+    let mut receiver = DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [6; 32]);
+
+    // Generate counters 0..5.
+    let mut frames = Vec::new();
+
+    for _ in 0..6 {
+        frames.push(sender.encrypt(b"future payload").unwrap());
+    }
+
+    // Deliver counter 5 first, but tampered.
+    //
+    // The receiver must derive/cache keys 0..5, including the target
+    // key for counter 5, but must NOT commit counter 5 until authentication
+    // succeeds.
+    let mut tampered = frames[5].clone();
+
+    if let Some(last) = tampered.payload.last_mut() {
+        *last ^= 0x01;
+    }
+
+    assert_eq!(receiver.decrypt(&tampered), Err(Error::AeadFailure));
+
+    // The legitimate counter-5 frame must still decrypt.
+    assert_eq!(receiver.decrypt(&frames[5]).unwrap(), b"future payload");
+}
+
+#[test]
+fn phase4_wrong_direction_rejected_before_ratchet_use() {
+    let session_id = SessionId::from_bytes([4; 16]);
+
+    let mut sender = DataSender::new(session_id, DirectionId::ResponderToInitiator, [8; 32]);
+
+    let mut receiver = DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [8; 32]);
+
+    let frame = sender.encrypt(b"wrong direction").unwrap();
+
+    // Direction is session state, not something the receiver should
+    // accept from the peer as an authority over its ratchet.
+    assert_eq!(receiver.decrypt(&frame), Err(Error::InvalidDataPayload));
+}
+
+#[test]
+fn phase4_successful_decryption_commits_key_and_rejects_replay() {
+    let session_id = SessionId::from_bytes([5; 16]);
+
+    let mut sender = DataSender::new(session_id, DirectionId::InitiatorToResponder, [9; 32]);
+
+    let mut receiver = DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [9; 32]);
+
+    let frame = sender.encrypt(b"one time message").unwrap();
+
+    // First authenticated delivery succeeds.
+    assert_eq!(receiver.decrypt(&frame).unwrap(), b"one time message");
+
+    // Second delivery is rejected by replay protection.
+    assert_eq!(receiver.decrypt(&frame), Err(Error::ReplayRejected));
 }
 
 // ============================================================================
