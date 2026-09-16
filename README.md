@@ -50,7 +50,7 @@ RUXMSG does not provide anonymity, metadata confidentiality, deniability, or pro
 
 The documents have distinct authority and audiences:
 
-- [Protocol specification](protocol-spec.md) — authoritative normative wire and security contract.
+- [Protocol specification](docs/protocol-spec.md) — authoritative normative wire and security contract.
 - [Protocol reference](docs/protocol-reference.md) — implementation-facing field and encoding index.
 - [Conformance matrix](docs/conformance-matrix.md) — implementation, test, and readiness status.
 - [Architecture guide](docs/architecture.md) — non-normative module and data-flow explanation.

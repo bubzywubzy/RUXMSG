@@ -3,9 +3,9 @@ name = "ruxmsg"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Protocol library for the RUXMSG/1 terminal messaging protocol"
-license = "MIT OR Apache-2.0"
-repository = "https://example.invalid/ruxmsg"
+description = "Peer-to-peer encrypted messaging protocol library and terminal client for explicitly trusted peers"
+license = "Apache-2.0"
+repository = "https://github.com/bubzywubzy/RUXMSG"
 
 [lib]
 path = "src/lib.rs"
