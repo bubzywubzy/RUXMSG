@@ -6,7 +6,7 @@ RUXMSG is a Rust protocol library and terminal client for communication between 
 
 ## What exists today
 
-The repository is a **Phase 5 conformance foundation**, not a finished production messenger. It currently provides:
+The repository is not a finished production messenger. It currently provides:
 
 - Ed25519 persistent identities;
 - X25519 ephemeral session establishment;
