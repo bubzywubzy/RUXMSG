@@ -1,6 +1,6 @@
 [package]
 name = "ruxmsg"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Peer-to-peer encrypted messaging protocol library and terminal client for explicitly trusted peers"
@@ -19,7 +19,7 @@ crossterm = "0.29.0"
 ed25519-dalek = { version = "2.1", features = ["rand_core", "zeroize"] }
 hkdf = "0.12"
 hmac = "0.12"
-keyring = { version = "3.6.3", features = ["sync-secret-service"] }
+keyring = { version = "4.2.0", default-features = false, features = ["v1", "dbus-secret-service-keyring-store"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 ratatui = "0.29.0"
 serde = { version = "1", features = ["derive"] }
