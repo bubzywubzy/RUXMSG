@@ -12,7 +12,7 @@ use crate::crypto::{
 };
 use crate::encoding::Transcript;
 use crate::error::{Error, Result};
-use crate::identity::{PeerIdentity, TrustState};
+use crate::identity::PeerIdentity;
 use crate::protocol::{MessageType, SessionId};
 use crate::wire::Frame;
 
@@ -462,44 +462,33 @@ pub fn verify_handshake(
     payload: &HandshakePayload,
     shared_secret: &[u8; 32],
     sas_approved: bool,
-    trusted_identity: Option<(PeerIdentity, TrustState)>,
 ) -> Result<(SessionKeys, [u8; 32])> {
-    verify_handshake_for_role(
-        payload,
-        shared_secret,
-        sas_approved,
-        trusted_identity,
-        HelloRole::Responder,
-    )
+    verify_handshake_for_role(payload, shared_secret, sas_approved)
 }
 
-/// Verifies signatures, SAS/trust policy, and derives candidate session keys.
+/// Verifies the SAS approval, transcript signatures, and derives candidate
+/// session keys.
+///
+/// SAS approval is mandatory for every handshake, including reconnects with a
+/// previously observed public identity.
 pub fn verify_handshake_for_role(
     payload: &HandshakePayload,
     shared_secret: &[u8; 32],
     sas_approved: bool,
-    trusted_identity: Option<(PeerIdentity, TrustState)>,
-    local_role: HelloRole,
 ) -> Result<(SessionKeys, [u8; 32])> {
-    if !sas_approved && trusted_identity.is_none() {
+    if !sas_approved {
         return Err(Error::SasRejected);
     }
-    if let Some((identity, state)) = trusted_identity {
-        let expected_peer = match local_role {
-            HelloRole::Initiator => payload.responder_identity,
-            HelloRole::Responder => payload.initiator_identity,
-        };
-        if state != TrustState::Trusted || identity != expected_peer {
-            return Err(Error::IdentityMismatch);
-        }
-    }
+
     let transcript_hash = transcript_hash(&payload.transcript().encode()?);
+
     verify_transcript_signature(
         &payload.initiator_identity,
         &transcript_hash,
         &payload.initiator_signature,
         true,
     )?;
+
     if let Some(signature) = payload.responder_signature {
         verify_transcript_signature(
             &payload.responder_identity,
@@ -510,6 +499,7 @@ pub fn verify_handshake_for_role(
     } else if payload.stage != 0 {
         return Err(Error::InvalidHandshake);
     }
+
     Ok((
         derive_session_keys(shared_secret, &transcript_hash)?,
         transcript_hash,
@@ -614,11 +604,11 @@ mod tests {
         payload.initiator_signature = initiator.sign_transcript(&hash, true);
         let frame = payload.encode().unwrap();
         let decoded = HandshakePayload::decode(&frame).unwrap();
-        verify_handshake(&decoded, &[7; 32], true, None).unwrap();
+        verify_handshake(&decoded, &[7; 32], true).unwrap();
     }
 
     #[test]
-    fn first_contact_requires_sas_and_trusted_identity_must_match() {
+    fn first_contact_requires_sas() {
         let initiator = IdentityKeypair::from_bytes(&[1; 32]);
         let responder = IdentityKeypair::from_bytes(&[2; 32]);
         let mut payload = HandshakePayload {
@@ -638,17 +628,8 @@ mod tests {
         let hash = transcript_hash(&payload.transcript().encode().unwrap());
         payload.initiator_signature = initiator.sign_transcript(&hash, true);
         assert!(matches!(
-            verify_handshake(&payload, &[7; 32], false, None),
+            verify_handshake(&payload, &[7; 32], false),
             Err(Error::SasRejected)
-        ));
-        assert!(matches!(
-            verify_handshake(
-                &payload,
-                &[7; 32],
-                true,
-                Some((PeerIdentity::from_bytes([9; 32]), TrustState::Trusted)),
-            ),
-            Err(Error::IdentityMismatch)
         ));
     }
 

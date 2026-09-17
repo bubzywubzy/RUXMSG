@@ -18,7 +18,6 @@ fn split_connection_can_send_while_the_reader_is_blocked_waiting_on_the_peer() {
             FramedTransport::new(stream),
             IdentityKeypair::from_bytes(&[2; 32]),
             |_| true,
-            None,
             Instant::now(),
         )
         .unwrap();
@@ -37,7 +36,6 @@ fn split_connection_can_send_while_the_reader_is_blocked_waiting_on_the_peer() {
         FramedTransport::new(stream),
         IdentityKeypair::from_bytes(&[1; 32]),
         |_| true,
-        None,
         Instant::now(),
     )
     .unwrap();

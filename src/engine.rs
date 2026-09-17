@@ -12,7 +12,7 @@ use crate::handshake::{
     HandshakePayload, HandshakePurpose, HandshakeType, HelloPayload, HelloRole,
     SessionConfirmPayload, transcript_from_hellos, verify_handshake_for_role,
 };
-use crate::identity::{PeerIdentity, TrustState};
+use crate::identity::PeerIdentity;
 use crate::protocol::SessionId;
 use crate::transport::Transport;
 
@@ -50,7 +50,6 @@ pub fn establish_initiator<T, F>(
     identity: &IdentityKeypair,
     previous_session_id: Option<SessionId>,
     sas_approved: F,
-    trusted_identity: Option<(PeerIdentity, TrustState)>,
 ) -> Result<EstablishedSession>
 where
     T: Transport,
@@ -72,11 +71,7 @@ where
     let transcript = transcript_from_hellos(&local_hello, &remote_hello)?;
     let transcript_bytes = transcript.encode()?;
     let hash = transcript_hash(&transcript_bytes);
-    let remote_is_trusted = matches!(
-        trusted_identity,
-        Some((trusted_key, TrustState::Trusted)) if trusted_key == remote_hello.identity_public_key
-    );
-    if !remote_is_trusted && !sas_approved(crate::crypto::sas_words(&hash)) {
+    if !sas_approved(crate::crypto::sas_words(&hash)) {
         return Err(Error::SasRejected);
     }
     let auth = HandshakePayload {
@@ -95,13 +90,8 @@ where
     };
     transport.send(&auth.encode()?)?;
     let response = HandshakePayload::decode(&transport.receive()?)?;
-    let (keys, _) = verify_handshake_for_role(
-        &response,
-        &shared_secret,
-        true,
-        trusted_identity,
-        HelloRole::Initiator,
-    )?;
+    let (keys, _) = verify_handshake_for_role(&response, &shared_secret, true)?;
+
     let initiator_confirm = SessionConfirmPayload {
         session_id: keys.session_id,
         role: 0,
@@ -127,7 +117,6 @@ pub fn establish_responder<T, F>(
     identity: &IdentityKeypair,
     previous_session_id: Option<SessionId>,
     sas_approved: F,
-    trusted_identity: Option<(PeerIdentity, TrustState)>,
 ) -> Result<EstablishedSession>
 where
     T: Transport,
@@ -153,21 +142,11 @@ where
     transport.send(&local_hello.encode()?)?;
     let transcript = transcript_from_hellos(&remote_hello, &local_hello)?;
     let hash = transcript_hash(&transcript.encode()?);
-    let remote_is_trusted = matches!(
-        trusted_identity,
-        Some((trusted_key, TrustState::Trusted)) if trusted_key == remote_hello.identity_public_key
-    );
-    if !remote_is_trusted && !sas_approved(crate::crypto::sas_words(&hash)) {
+    if !sas_approved(crate::crypto::sas_words(&hash)) {
         return Err(Error::SasRejected);
     }
     let request = HandshakePayload::decode(&transport.receive()?)?;
-    let (candidate_keys, _) = verify_handshake_for_role(
-        &request,
-        &shared_secret,
-        true,
-        trusted_identity,
-        HelloRole::Responder,
-    )?;
+    let (candidate_keys, _) = verify_handshake_for_role(&request, &shared_secret, true)?;
     let response = HandshakePayload {
         handshake_type: HandshakeType::try_from(transcript.handshake_type as u64)?,
         stage: 1,

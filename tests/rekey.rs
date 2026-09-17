@@ -15,14 +15,11 @@ fn rekey_over_a_live_transport_replaces_the_session_and_drains_the_old_one() {
     let responder_identity = IdentityKeypair::from_bytes(&[2; 32]);
 
     let responder_thread = thread::spawn(move || {
-        let initial = establish_responder(
-            &mut responder_transport,
-            &responder_identity,
-            None,
-            |_| true,
-            None,
-        )
-        .unwrap();
+        let initial =
+            establish_responder(&mut responder_transport, &responder_identity, None, |_| {
+                true
+            })
+            .unwrap();
         let mut manager =
             SessionManager::from_initial_handshake(initial, HelloRole::Responder, Instant::now())
                 .unwrap();
@@ -34,7 +31,6 @@ fn rekey_over_a_live_transport_replaces_the_session_and_drains_the_old_one() {
             &responder_identity,
             Some(old_id),
             |_| true,
-            None,
         )
         .unwrap();
         manager
@@ -43,13 +39,9 @@ fn rekey_over_a_live_transport_replaces_the_session_and_drains_the_old_one() {
         (old_id, manager.active_session_id())
     });
 
-    let initial = establish_initiator(
-        &mut initiator_transport,
-        &initiator_identity,
-        None,
-        |_| true,
-        None,
-    )
+    let initial = establish_initiator(&mut initiator_transport, &initiator_identity, None, |_| {
+        true
+    })
     .unwrap();
     let mut manager =
         SessionManager::from_initial_handshake(initial, HelloRole::Initiator, Instant::now())
@@ -64,7 +56,6 @@ fn rekey_over_a_live_transport_replaces_the_session_and_drains_the_old_one() {
         &initiator_identity,
         Some(old_id),
         |_| true,
-        None,
     )
     .unwrap();
     manager

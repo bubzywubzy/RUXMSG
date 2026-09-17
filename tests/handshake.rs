@@ -12,23 +12,16 @@ fn peers_complete_hello_signature_and_confirmation_exchange() {
     let initiator_public = initiator_identity.identity();
     let responder_public = responder_identity.identity();
     let responder = thread::spawn(move || {
-        establish_responder(
-            &mut responder_transport,
-            &responder_identity,
-            None,
-            |_| true,
-            None,
-        )
+        establish_responder(&mut responder_transport, &responder_identity, None, |_| {
+            true
+        })
         .unwrap()
     });
-    let initiator = establish_initiator(
-        &mut initiator_transport,
-        &initiator_identity,
-        None,
-        |_| true,
-        None,
-    )
-    .unwrap();
+    let initiator =
+        establish_initiator(&mut initiator_transport, &initiator_identity, None, |_| {
+            true
+        })
+        .unwrap();
     let responder = responder.join().unwrap();
     assert_eq!(initiator.peer_identity, responder_public);
     assert_eq!(responder.peer_identity, initiator_public);

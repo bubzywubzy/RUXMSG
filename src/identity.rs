@@ -1,10 +1,13 @@
-//! Persistent peer identities and application-level trust records.
+//! Public peer identity representation.
 //!
-//! A [`PeerIdentity`] is a public Ed25519 identity, not a network address.
-//! Receiving one does not itself change a peer's [`TrustState`].
+//! A `PeerIdentity` is a public Ed25519 identity. It is not a network
+//! address, trust record, or persistent peer entry.
+//!
+//! Receiving a peer identity never changes persistent local state.
 
 use crate::error::{Error, Result};
 
+/// A peer's 32-byte Ed25519 public identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerIdentity([u8; 32]);
 
@@ -23,37 +26,12 @@ impl PeerIdentity {
             expected: Self::LENGTH,
             actual: bytes.len(),
         })?;
+
         Ok(Self(array))
     }
 
     /// Borrows the public-key bytes.
     pub const fn as_bytes(&self) -> &[u8; Self::LENGTH] {
         &self.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrustState {
-    Unknown,
-    Trusted,
-    Revoked,
-    Replaced,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerRecord {
-    pub identity: PeerIdentity,
-    pub display_name: Option<String>,
-    pub trust_state: TrustState,
-}
-
-impl PeerRecord {
-    /// Creates an untrusted record for an identity.
-    pub fn new(identity: PeerIdentity) -> Self {
-        Self {
-            identity,
-            display_name: None,
-            trust_state: TrustState::Unknown,
-        }
     }
 }

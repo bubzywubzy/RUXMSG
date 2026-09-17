@@ -19,5 +19,5 @@ pub mod transport;
 pub mod wire;
 
 pub use error::{Error, Result};
-pub use identity::{PeerIdentity, PeerRecord, TrustState};
+pub use identity::PeerIdentity;
 pub use protocol::{DirectionId, FrameLength, MessageType, ProtocolVersion, SessionId};

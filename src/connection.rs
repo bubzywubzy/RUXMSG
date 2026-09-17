@@ -5,7 +5,6 @@ use crate::crypto::IdentityKeypair;
 use crate::engine::{establish_initiator, establish_responder};
 use crate::error::{Error, Result};
 use crate::handshake::HelloRole;
-use crate::identity::{PeerIdentity, TrustState};
 use crate::manager::SessionManager;
 use crate::protocol::MessageType;
 use crate::transport::{Demuxer, Transport};
@@ -41,12 +40,10 @@ impl<T: Transport> PeerConnection<T> {
         mut transport: T,
         identity: IdentityKeypair,
         sas_approved: impl FnOnce([&'static str; 3]) -> bool,
-        trusted_identity: Option<(PeerIdentity, TrustState)>,
         now: Instant,
     ) -> Result<Self> {
         let mut demux = Demuxer::new(&mut transport);
-        let established =
-            establish_initiator(&mut demux, &identity, None, sas_approved, trusted_identity)?;
+        let established = establish_initiator(&mut demux, &identity, None, sas_approved)?;
         let pending = demux.take_buffered();
         let manager =
             SessionManager::from_initial_handshake(established, HelloRole::Initiator, now)?;
@@ -66,12 +63,10 @@ impl<T: Transport> PeerConnection<T> {
         mut transport: T,
         identity: IdentityKeypair,
         sas_approved: impl FnOnce([&'static str; 3]) -> bool,
-        trusted_identity: Option<(PeerIdentity, TrustState)>,
         now: Instant,
     ) -> Result<Self> {
         let mut demux = Demuxer::new(&mut transport);
-        let established =
-            establish_responder(&mut demux, &identity, None, sas_approved, trusted_identity)?;
+        let established = establish_responder(&mut demux, &identity, None, sas_approved)?;
         let pending = demux.take_buffered();
         let manager =
             SessionManager::from_initial_handshake(established, HelloRole::Responder, now)?;
@@ -119,7 +114,6 @@ impl<T: Transport> PeerConnection<T> {
     pub fn rekey(
         &mut self,
         sas_approved: impl FnOnce([&'static str; 3]) -> bool,
-        trusted_identity: Option<(PeerIdentity, TrustState)>,
         now: Instant,
     ) -> Result<()> {
         self.manager.begin_rekey()?;
@@ -132,14 +126,12 @@ impl<T: Transport> PeerConnection<T> {
                 &self.identity,
                 Some(previous_session_id),
                 sas_approved,
-                trusted_identity,
             ),
             HelloRole::Responder => establish_responder(
                 &mut demux,
                 &self.identity,
                 Some(previous_session_id),
                 sas_approved,
-                trusted_identity,
             ),
         };
         self.pending.extend(demux.take_buffered());
@@ -279,7 +271,6 @@ impl TcpConnectionReader {
     pub fn rekey(
         &mut self,
         sas_approved: impl FnOnce([&'static str; 3]) -> bool,
-        trusted_identity: Option<(PeerIdentity, TrustState)>,
         now: Instant,
     ) -> Result<()> {
         let previous_session_id = {
@@ -299,14 +290,12 @@ impl TcpConnectionReader {
                 &self.identity,
                 Some(previous_session_id),
                 sas_approved,
-                trusted_identity,
             ),
             HelloRole::Responder => establish_responder(
                 &mut demux,
                 &self.identity,
                 Some(previous_session_id),
                 sas_approved,
-                trusted_identity,
             ),
         };
         self.pending.extend(demux.take_buffered());

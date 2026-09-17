@@ -13,7 +13,7 @@ use ruxmsg::handshake::{
     HandshakePayload, HandshakePurpose, HandshakeType, HelloPayload, HelloRole,
     SessionConfirmPayload, transcript_from_hellos, verify_handshake,
 };
-use ruxmsg::identity::{PeerIdentity, TrustState};
+use ruxmsg::identity::PeerIdentity;
 use ruxmsg::protocol::{
     DEFAULT_PADDING_QUANTUM, DirectionId, FrameLength, MAX_FRAME_SIZE, MessageType,
     ProtocolVersion, SessionId,
@@ -466,7 +466,7 @@ fn phase3_hello_schema_strict_validation() {
 }
 
 #[test]
-fn phase3_handshake_signature_and_trust_validation() {
+fn phase3_handshake_signature() {
     let initiator = IdentityKeypair::from_bytes(&[1; 32]);
     let responder = IdentityKeypair::from_bytes(&[2; 32]);
 
@@ -489,35 +489,15 @@ fn phase3_handshake_signature_and_trust_validation() {
 
     // SAS rejection aborts
     assert!(matches!(
-        verify_handshake(&payload, &[7; 32], false, None),
+        verify_handshake(&payload, &[7; 32], false),
         Err(Error::SasRejected)
     ));
 
     // SAS approved on first contact succeeds
-    assert!(verify_handshake(&payload, &[7; 32], true, None).is_ok());
+    assert!(verify_handshake(&payload, &[7; 32], true).is_ok());
 
     // Previously trusted peer matches -> succeeds
-    assert!(
-        verify_handshake(
-            &payload,
-            &[7; 32],
-            true,
-            Some((initiator.identity(), TrustState::Trusted))
-        )
-        .is_ok()
-    );
-
-    // Identity mismatch (presented identity != trusted identity) -> fails
-    let wrong_trusted_peer = PeerIdentity::from_bytes([99; 32]);
-    assert!(matches!(
-        verify_handshake(
-            &payload,
-            &[7; 32],
-            true,
-            Some((wrong_trusted_peer, TrustState::Trusted))
-        ),
-        Err(Error::IdentityMismatch)
-    ));
+    assert!(verify_handshake(&payload, &[7; 32], true,).is_ok());
 }
 
 #[test]
@@ -1009,80 +989,4 @@ fn phase7_close_frame_schema_and_reasons() {
         detail: Some(oversized_detail),
     };
     assert_eq!(oversized_payload.encode(), Err(Error::InvalidClosePayload));
-}
-
-// ============================================================================
-// Phase 8: Storage, Sealed Trust & Trusted Peer Fast-Path (§3.3, §12.1)
-// ============================================================================
-
-#[test]
-fn phase8_in_memory_trust_store_crud() {
-    use ruxmsg::identity::PeerRecord;
-    use ruxmsg::storage::{InMemoryTrustStore, TrustStore};
-
-    let mut store = InMemoryTrustStore::default();
-    let peer_id = PeerIdentity::from_bytes([0x88; 32]);
-    assert_eq!(store.get(&peer_id).unwrap(), None);
-
-    let mut record = PeerRecord::new(peer_id);
-    record.trust_state = TrustState::Trusted;
-    store.put(record.clone()).unwrap();
-
-    let retrieved = store.get(&peer_id).unwrap().expect("record must exist");
-    assert_eq!(retrieved.identity, peer_id);
-    assert_eq!(retrieved.trust_state, TrustState::Trusted);
-
-    let removed = store
-        .remove(&peer_id)
-        .unwrap()
-        .expect("must return removed record");
-    assert_eq!(removed.identity, peer_id);
-    assert_eq!(store.get(&peer_id).unwrap(), None);
-}
-
-#[test]
-fn phase8_trusted_peer_bypasses_sas_callback() {
-    use ruxmsg::connection::PeerConnection;
-    use ruxmsg::transport::InMemoryTransport;
-    use std::thread;
-    use std::time::Instant;
-
-    let (alice_transport, bob_transport) = InMemoryTransport::pair();
-    let alice_identity = IdentityKeypair::from_bytes(&[0x11; 32]);
-    let bob_identity = IdentityKeypair::from_bytes(&[0x22; 32]);
-    let alice_pub = alice_identity.identity();
-    let bob_pub = bob_identity.identity();
-
-    // Alice already trusts Bob, and Bob already trusts Alice.
-    // The SAS callback panics if invoked, proving SAS is bypassed per §3.3.
-    let bob_thread = thread::spawn(move || {
-        PeerConnection::establish_as_responder(
-            bob_transport,
-            bob_identity,
-            |_| panic!("SAS callback must not be called for trusted peer"),
-            Some((alice_pub, TrustState::Trusted)),
-            Instant::now(),
-        )
-        .unwrap()
-    });
-
-    let mut alice_conn = PeerConnection::establish_as_initiator(
-        alice_transport,
-        alice_identity,
-        |_| panic!("SAS callback must not be called for trusted peer"),
-        Some((bob_pub, TrustState::Trusted)),
-        Instant::now(),
-    )
-    .unwrap();
-
-    let mut bob_conn = bob_thread.join().unwrap();
-
-    alice_conn
-        .send(b"authenticated without SAS prompt")
-        .unwrap();
-    let event = bob_conn.recv_next().unwrap();
-    assert_eq!(
-        event,
-        ruxmsg::connection::ConnectionEvent::Data(b"authenticated without SAS prompt".to_vec())
-    );
 }

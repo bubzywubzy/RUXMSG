@@ -15,13 +15,12 @@ fn data_frame_queued_before_a_rekey_survives_the_interleaved_handshake() {
             responder_transport,
             IdentityKeypair::from_bytes(&[2; 32]),
             |_| true,
-            None,
             Instant::now(),
         )
         .unwrap();
         // Rekey concurrently with the DATA frame the initiator queued below;
         // the responder's own rekey handshake must buffer it, not choke on it.
-        responder.rekey(|_| true, None, Instant::now()).unwrap();
+        responder.rekey(|_| true, Instant::now()).unwrap();
         let event = responder.recv_next().unwrap();
         (responder, event)
     });
@@ -30,14 +29,13 @@ fn data_frame_queued_before_a_rekey_survives_the_interleaved_handshake() {
         initiator_transport,
         initiator_identity,
         |_| true,
-        None,
         Instant::now(),
     )
     .unwrap();
 
     // Queued on the wire before the rekey handshake frames.
     initiator.send(b"queued before rekey").unwrap();
-    initiator.rekey(|_| true, None, Instant::now()).unwrap();
+    initiator.rekey(|_| true, Instant::now()).unwrap();
 
     let (mut responder, event) = responder_thread.join().unwrap();
     assert_eq!(
