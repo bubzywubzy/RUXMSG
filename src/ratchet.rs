@@ -4,6 +4,7 @@
 //! supported only within the configured skipped-key and replay limits.
 
 use std::collections::BTreeMap;
+use zeroize::Zeroize;
 
 use crate::crypto::derive_message_key;
 use crate::error::{Error, Result};
@@ -21,6 +22,15 @@ pub enum ReplayStatus {
 pub struct ReplayWindow {
     highest: Option<u64>,
     bits: u64,
+}
+
+impl Drop for ReceivingChain {
+    fn drop(&mut self) {
+        self.chain_key.zeroize();
+        for key in self.skipped.values_mut() {
+            key.zeroize();
+        }
+    }
 }
 
 impl Default for ReplayWindow {

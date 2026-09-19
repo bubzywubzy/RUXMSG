@@ -7,7 +7,8 @@
 use std::fmt;
 
 use ciborium::value::Value;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 
 use crate::crypto::{decrypt_message, derive_message_key, encrypt_message, message_nonce};
 use crate::error::{Error, Result};
@@ -129,10 +130,14 @@ impl DataPlaintext {
     }
 }
 
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct DataSender {
+    #[zeroize(skip)]
     session_id: SessionId,
+    #[zeroize(skip)]
     direction: DirectionId,
-    chain_key: Zeroizing<[u8; 32]>,
+    chain_key: [u8; 32],
+    #[zeroize(skip)]
     counter: u64,
 }
 
