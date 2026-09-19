@@ -349,13 +349,9 @@ impl TcpConnectionWriter {
             .lock()
             .expect("manager mutex is not poisoned")
             .close();
-
-        let _ = self
-            .write
-            .lock()
-            .expect("write mutex is not poisoned")
-            .shutdown(std::net::Shutdown::Both);
-
+        if let Ok(write) = self.write.lock() {
+            let _ = write.shutdown(std::net::Shutdown::Both);
+        }
         Ok(())
     }
 
