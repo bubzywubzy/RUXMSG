@@ -33,9 +33,9 @@
 //! The network session itself remains alive while the frontend changes.
 
 use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Command, Stdio};
+use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -43,16 +43,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers,
-};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use crossterm::event::{self, Event as CEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
-use ratatui::layout::{Constraint, Direction, Layout, Margin};
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -152,7 +146,6 @@ struct PeerHandle {
     status: SessionStatus,
     outbound: bool,
     tx: mpsc::Sender<SessionCommand>,
-    messages: Vec<ChatMessage>,
 }
 
 /// Commands directed to one live session.
@@ -1488,12 +1481,12 @@ impl ChatApp {
         match key.code {
             KeyCode::Esc => {
                 self.closed = true;
-                Ok(true)
+                return Ok(true);
             }
 
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.closed = true;
-                Ok(true)
+                return Ok(true);
             }
 
             KeyCode::Enter => {
@@ -1939,7 +1932,7 @@ fn tailscale_missing_message() -> String {
 }
 
 fn tailscale_status() {
-    match Command::new("tailscale")
+    match ProcessCommand::new("tailscale")
         .args(["status", "--json"])
         .output()
     {
@@ -1969,7 +1962,7 @@ fn tailscale_status() {
 }
 
 fn tailscale_up() {
-    match Command::new("tailscale")
+    match ProcessCommand::new("tailscale")
         .arg("up")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -1990,7 +1983,7 @@ fn tailscale_up() {
 }
 
 fn tailscale_ip() {
-    match Command::new("tailscale").arg("ip").output() {
+    match ProcessCommand::new("tailscale").arg("ip").output() {
         Ok(output) if output.status.success() => {
             print!("{}", String::from_utf8_lossy(&output.stdout));
         }
