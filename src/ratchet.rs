@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use crate::crypto::derive_message_key;
 use crate::error::{Error, Result};
 use crate::protocol::{DirectionId, MAX_SKIPPED_KEYS, REPLAY_WINDOW_SIZE};
-use crate::zeroize::Zeroizing;
+use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplayStatus {
