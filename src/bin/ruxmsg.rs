@@ -48,7 +48,9 @@ use crossterm::event::{
     KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 
 use ratatui::layout::{Constraint, Direction, Layout, Margin};
 use ratatui::prelude::*;
@@ -337,9 +339,7 @@ impl Application {
             .identity
             .as_ref()
             .map(|identity| Arc::clone(&identity.keypair))
-            .ok_or_else(|| {
-                "no identity loaded — run `profile use <name>` first".to_string()
-            })?;
+            .ok_or_else(|| "no identity loaded — run `profile use <name>` first".to_string())?;
 
         let listener = TcpListener::bind(addr).map_err(|error| error.to_string())?;
 
@@ -430,9 +430,7 @@ impl Application {
             .identity
             .as_ref()
             .map(|identity| Arc::clone(&identity.keypair))
-            .ok_or_else(|| {
-                "no identity loaded — run `profile use <name>` first".to_string()
-            })?;
+            .ok_or_else(|| "no identity loaded — run `profile use <name>` first".to_string())?;
 
         let stream = TcpStream::connect(addr).map_err(|error| error.to_string())?;
 
@@ -633,10 +631,7 @@ impl Application {
                 });
             }
 
-            NetEvent::Ready {
-                label,
-                fingerprint,
-            } => {
+            NetEvent::Ready { label, fingerprint } => {
                 println!("\n[{label}] connected");
                 println!("    peer fingerprint: {fingerprint}");
             }
@@ -741,9 +736,7 @@ impl Application {
 
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
-                    CEvent::Key(key)
-                        if key.kind == KeyEventKind::Press =>
-                    {
+                    CEvent::Key(key) if key.kind == KeyEventKind::Press => {
                         if chat.handle_key(key, self)? {
                             break Ok(());
                         }
@@ -795,9 +788,7 @@ impl Application {
 
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
-                    CEvent::Key(key)
-                        if key.kind == KeyEventKind::Press =>
-                    {
+                    CEvent::Key(key) if key.kind == KeyEventKind::Press => {
                         if self.handle_repl_key(key, &mut input)? {
                             break;
                         }
@@ -813,11 +804,7 @@ impl Application {
         Ok(())
     }
 
-    fn handle_repl_key(
-        &mut self,
-        key: KeyEvent,
-        input: &mut String,
-    ) -> io::Result<bool> {
+    fn handle_repl_key(&mut self, key: KeyEvent, input: &mut String) -> io::Result<bool> {
         if let Some(pending) = self.pending_sas.take() {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -832,10 +819,7 @@ impl Application {
                 | KeyCode::Enter
                 | KeyCode::Esc
                 | KeyCode::Char(_) => {
-                    let approved = matches!(
-                        key.code,
-                        KeyCode::Char('y') | KeyCode::Char('Y')
-                    );
+                    let approved = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
 
                     let _ = pending.answer_tx.send(approved);
 
@@ -931,7 +915,9 @@ impl Application {
             },
 
             Command::Peers => {
-                let peers = self.peers().unwrap_or_else(|error| format!("error: {error}"));
+                let peers = self
+                    .peers()
+                    .unwrap_or_else(|error| format!("error: {error}"));
                 self.write_line(&peers)?;
             }
 
@@ -952,9 +938,7 @@ impl Application {
                         self.write_line(&format!("error: {error}"))?;
                     }
                 } else {
-                    self.write_line(
-                        "unknown command — no default chat target; type `help`",
-                    )?;
+                    self.write_line("unknown command — no default chat target; type `help`")?;
                 }
             }
 
@@ -963,12 +947,10 @@ impl Application {
                 Err(error) => self.write_line(&format!("error: {error}"))?,
             },
 
-            Command::Fingerprint { label } => {
-                match self.fingerprint(label.as_deref()) {
-                    Ok(fingerprint) => self.write_line(&fingerprint)?,
-                    Err(error) => self.write_line(&format!("error: {error}"))?,
-                }
-            }
+            Command::Fingerprint { label } => match self.fingerprint(label.as_deref()) {
+                Ok(fingerprint) => self.write_line(&fingerprint)?,
+                Err(error) => self.write_line(&format!("error: {error}"))?,
+            },
 
             Command::Session { label } => match self.session_info(&label) {
                 Ok(info) => self.write_line(&info)?,
@@ -987,9 +969,7 @@ impl Application {
 
                     None => {
                         self.write_line("usage: chat <label>")?;
-                        self.write_line(
-                            "or select a target first with `use <label>`",
-                        )?;
+                        self.write_line("or select a target first with `use <label>`")?;
                     }
                 }
             }
@@ -1111,44 +1091,27 @@ impl Application {
 enum Command {
     Profile(ProfileCommand),
 
-    Start {
-        addr: String,
-    },
+    Start { addr: String },
 
     Stop,
 
-    Connect {
-        addr: String,
-    },
+    Connect { addr: String },
 
     Peers,
 
-    Use {
-        label: String,
-    },
+    Use { label: String },
 
-    Message {
-        label: String,
-        text: String,
-    },
+    Message { label: String, text: String },
 
     BareMessage(String),
 
-    Close {
-        label: String,
-    },
+    Close { label: String },
 
-    Fingerprint {
-        label: Option<String>,
-    },
+    Fingerprint { label: Option<String> },
 
-    Session {
-        label: String,
-    },
+    Session { label: String },
 
-    Chat {
-        label: Option<String>,
-    },
+    Chat { label: Option<String> },
 
     Tailscale(TailscaleCommand),
 
@@ -1324,9 +1287,7 @@ impl CommandParser {
         }
     }
 
-    fn parse_profile<'a>(
-        mut words: impl Iterator<Item = &'a str>,
-    ) -> Result<Command, String> {
+    fn parse_profile<'a>(mut words: impl Iterator<Item = &'a str>) -> Result<Command, String> {
         let subcommand = words
             .next()
             .ok_or_else(|| "usage: profile <init|use|list> ...".to_string())?;
@@ -1341,9 +1302,7 @@ impl CommandParser {
                     return Err("usage: profile init <name>".into());
                 }
 
-                Ok(Command::Profile(ProfileCommand::Init(
-                    name.to_string(),
-                )))
+                Ok(Command::Profile(ProfileCommand::Init(name.to_string())))
             }
 
             "use" => {
@@ -1355,9 +1314,7 @@ impl CommandParser {
                     return Err("usage: profile use <name>".into());
                 }
 
-                Ok(Command::Profile(ProfileCommand::Use(
-                    name.to_string(),
-                )))
+                Ok(Command::Profile(ProfileCommand::Use(name.to_string())))
             }
 
             "list" => Self::no_args(
@@ -1370,15 +1327,11 @@ impl CommandParser {
         }
     }
 
-    fn parse_tailscale<'a>(
-        mut words: impl Iterator<Item = &'a str>,
-    ) -> Result<Command, String> {
+    fn parse_tailscale<'a>(mut words: impl Iterator<Item = &'a str>) -> Result<Command, String> {
         let subcommand = words.next().unwrap_or("status");
 
         if words.next().is_some() {
-            return Err(
-                "usage: tailscale <status|up|ip>".into()
-            );
+            return Err("usage: tailscale <status|up|ip>".into());
         }
 
         let command = match subcommand {
@@ -1439,11 +1392,7 @@ impl ChatApp {
         }
     }
 
-    fn handle_network_event(
-        &mut self,
-        event: NetEvent,
-        app: &mut Application,
-    ) {
+    fn handle_network_event(&mut self, event: NetEvent, app: &mut Application) {
         match event {
             NetEvent::Message { label, text } => {
                 if label == self.label {
@@ -1462,10 +1411,7 @@ impl ChatApp {
                 }
             }
 
-            NetEvent::Ready {
-                label,
-                fingerprint,
-            } => {
+            NetEvent::Ready { label, fingerprint } => {
                 if label == self.label {
                     self.messages.push(ChatMessage {
                         author: MessageAuthor::System,
@@ -1511,10 +1457,7 @@ impl ChatApp {
                 if label == self.label {
                     self.messages.push(ChatMessage {
                         author: MessageAuthor::System,
-                        text: format!(
-                            "VERIFY WITH PEER: {} {} {}",
-                            words[0], words[1], words[2]
-                        ),
+                        text: format!("VERIFY WITH PEER: {} {} {}", words[0], words[1], words[2]),
                     });
 
                     self.messages.push(ChatMessage {
@@ -1541,20 +1484,14 @@ impl ChatApp {
         }
     }
 
-    fn handle_key(
-        &mut self,
-        key: KeyEvent,
-        app: &mut Application,
-    ) -> io::Result<bool> {
+    fn handle_key(&mut self, key: KeyEvent, app: &mut Application) -> io::Result<bool> {
         match key.code {
             KeyCode::Esc => {
                 self.closed = true;
                 Ok(true)
             }
 
-            KeyCode::Char('c')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.closed = true;
                 Ok(true)
             }
@@ -1645,9 +1582,7 @@ impl ChatApp {
     }
 
     fn render_messages(&mut self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Messages ");
+        let block = Block::default().borders(Borders::ALL).title(" Messages ");
 
         let inner = block.inner(area);
 
@@ -1800,8 +1735,7 @@ fn spawn_session(
             }
         };
 
-        let fingerprint =
-            format_identity(&connection.manager().active().peer_identity());
+        let fingerprint = format_identity(&connection.manager().active().peer_identity());
 
         let (mut reader, writer) = match connection.split_tcp() {
             Ok(halves) => halves,
@@ -1925,9 +1859,7 @@ fn validate_profile_name(name: &str) -> ruxmsg::Result<()> {
     }
 
     if name.len() > 64 {
-        return Err(ruxmsg::Error::Storage(
-            "profile name is too long".into(),
-        ));
+        return Err(ruxmsg::Error::Storage("profile name is too long".into()));
     }
 
     if !name
@@ -1935,8 +1867,7 @@ fn validate_profile_name(name: &str) -> ruxmsg::Result<()> {
         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
     {
         return Err(ruxmsg::Error::Storage(
-            "profile names may contain only ASCII letters, digits, '-' and '_'"
-                .into(),
+            "profile names may contain only ASCII letters, digits, '-' and '_'".into(),
         ));
     }
 
@@ -2018,9 +1949,7 @@ fn tailscale_status() {
             if text.contains("\"BackendState\":\"Running\"") {
                 println!("tailscale: running");
             } else if text.contains("\"BackendState\":\"NeedsLogin\"") {
-                println!(
-                    "tailscale: installed, not logged in — run `tailscale up`"
-                );
+                println!("tailscale: installed, not logged in — run `tailscale up`");
             } else {
                 println!("tailscale: installed, not running");
             }

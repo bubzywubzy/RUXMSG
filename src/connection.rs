@@ -259,7 +259,7 @@ impl TcpConnectionReader {
             MessageType::Close => {
                 let close = ClosePayload::decode(&frame)?;
                 let mut manager = self.manager.lock().expect("manager mutex is not poisoned");
-                if close.session_id != Some(manager.active_session_id()) {  
+                if close.session_id != Some(manager.active_session_id()) {
                     return Err(Error::InvalidClosePayload);
                 }
                 manager.close();
@@ -350,7 +350,11 @@ impl TcpConnectionWriter {
             .expect("manager mutex is not poisoned")
             .close();
 
-        let _ = self.write.lock().expect("write mutex is not poisoned").shutdown(std::net::Shutdown::Both);    
+        let _ = self
+            .write
+            .lock()
+            .expect("write mutex is not poisoned")
+            .shutdown(std::net::Shutdown::Both);
 
         Ok(())
     }
