@@ -127,7 +127,6 @@ fn main() -> io::Result<()> {
 enum SessionStatus {
     Handshaking,
     Connected,
-    Closed(String),
 }
 
 impl SessionStatus {
@@ -135,7 +134,6 @@ impl SessionStatus {
         match self {
             Self::Handshaking => "handshaking".to_string(),
             Self::Connected => "connected".to_string(),
-            Self::Closed(reason) => format!("closed ({reason})"),
         }
     }
 }
@@ -195,13 +193,11 @@ enum NetEvent {
 // =====================================================================
 
 struct ActiveIdentity {
-    profile: String,
     keypair: Arc<IdentityKeypair>,
 }
 
 struct PendingSas {
     label: String,
-    words: [&'static str; 3],
     answer_tx: mpsc::Sender<bool>,
 }
 
@@ -290,7 +286,6 @@ impl Application {
         store.save(&identity)?;
 
         self.identity = Some(ActiveIdentity {
-            profile: name.to_string(),
             keypair: Arc::new(identity),
         });
 
@@ -312,7 +307,6 @@ impl Application {
         let fingerprint = format_identity(&identity.identity());
 
         self.identity = Some(ActiveIdentity {
-            profile: name.to_string(),
             keypair: Arc::new(identity),
         });
 
@@ -617,11 +611,7 @@ impl Application {
                     words[0], words[1], words[2]
                 );
 
-                self.pending_sas = Some(PendingSas {
-                    label,
-                    words,
-                    answer_tx,
-                });
+                self.pending_sas = Some(PendingSas { label, answer_tx });
             }
 
             NetEvent::Ready { label, fingerprint } => {
@@ -1460,11 +1450,7 @@ impl ChatApp {
                             .to_string(),
                     });
 
-                    app.pending_sas = Some(PendingSas {
-                        label,
-                        words,
-                        answer_tx,
-                    });
+                    app.pending_sas = Some(PendingSas { label, answer_tx });
                 } else {
                     let _ = answer_tx.send(false);
                 }
