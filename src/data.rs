@@ -7,6 +7,7 @@
 use std::fmt;
 
 use ciborium::value::Value;
+use zeroize::Zeroizing;
 
 use crate::crypto::{decrypt_message, derive_message_key, encrypt_message, message_nonce};
 use crate::error::{Error, Result};
@@ -131,7 +132,7 @@ impl DataPlaintext {
 pub struct DataSender {
     session_id: SessionId,
     direction: DirectionId,
-    chain_key: [u8; 32],
+    chain_key: Zeroizing<[u8; 32]>,
     counter: u64,
 }
 
@@ -152,7 +153,7 @@ impl DataSender {
         Self {
             session_id,
             direction,
-            chain_key,
+            chain_key: Zeroizing::new(chain_key),
             counter: 0,
         }
     }
@@ -254,12 +255,12 @@ impl DataReceiver {
 
         // AUTHENTICATE:
         // Any failure here leaves the prepared message key untouched.
-        let plaintext = decrypt_message(
+        let plaintext = Zeroizing::new(decrypt_message(
             &message_key,
             &message_nonce(payload.direction_id, payload.message_counter),
             &aad,
             &payload.ciphertext,
-        )?;
+        ))?;
 
         // VALIDATE:
         // Do not consume the message key until the authenticated plaintext

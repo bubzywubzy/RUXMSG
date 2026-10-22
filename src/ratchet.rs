@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use crate::crypto::derive_message_key;
 use crate::error::{Error, Result};
 use crate::protocol::{DirectionId, MAX_SKIPPED_KEYS, REPLAY_WINDOW_SIZE};
+use crate::zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplayStatus {
@@ -97,12 +98,12 @@ impl ReplayWindow {
 
 #[derive(Debug, Clone)]
 pub struct ReceivingChain {
-    chain_key: [u8; 32],
+    chain_key: Zeroizing<[u8; 32]>,
     next_counter: u64,
 
     // Keys that have been derived but have not yet been committed after
     // successful authentication.
-    skipped: BTreeMap<u64, [u8; 32]>,
+    skipped: BTreeMap<u64, Zeroizing<[u8; 32]>>,
 
     direction: DirectionId,
 }
@@ -111,7 +112,7 @@ impl ReceivingChain {
     /// Creates a receiving chain whose next expected counter is zero.
     pub fn new(chain_key: [u8; 32], direction: DirectionId) -> Self {
         Self {
-            chain_key,
+            chain_key: Zeroizing::new(chain_key),
             next_counter: 0,
             skipped: BTreeMap::new(),
             direction,
@@ -122,10 +123,10 @@ impl ReceivingChain {
     ///
     /// Keys remain retained until `commit_message_key()` is called after
     /// successful authentication and plaintext validation.
-    pub fn prepare_message_key(&mut self, counter: u64) -> Result<[u8; 32]> {
+    pub fn prepare_message_key(&mut self, counter: u64) -> Result<Zeroizing<[u8; 32]>> {
         // Do not remove the key here. Authentication may still fail.
         if let Some(key) = self.skipped.get(&counter) {
-            return Ok(*key);
+            return Ok(key.clone());
         }
 
         if counter < self.next_counter {
@@ -144,9 +145,9 @@ impl ReceivingChain {
         while self.next_counter < counter {
             let (key, next) = derive_message_key(&self.chain_key, self.direction);
 
-            self.skipped.insert(self.next_counter, key);
+            self.skipped.insert(self.next_counter, Zeroizing::new(key));
 
-            self.chain_key = next;
+            self.chain_key = Zeroizing::new(next);
 
             self.next_counter = self
                 .next_counter
@@ -159,16 +160,16 @@ impl ReceivingChain {
         // counter can be retried.
         let (key, next) = derive_message_key(&self.chain_key, self.direction);
 
-        self.chain_key = next;
+        self.chain_key = Zeroizing::new(next);
 
         self.next_counter = self
             .next_counter
             .checked_add(1)
             .ok_or(Error::CounterOverflow)?;
 
-        self.skipped.insert(counter, key);
+        self.skipped.insert(counter, Zeroizing::new(key));
 
-        Ok(key)
+        Ok(Zeroizing::new(key))
     }
 
     /// Commits a successfully authenticated message key.
