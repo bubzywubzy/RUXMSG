@@ -838,10 +838,8 @@ impl Application {
 
                 self.clear_current_input()?;
 
-                if !line.is_empty() {
-                    if self.dispatch(&line)? {
-                        return Ok(true);
-                    }
+                if !line.is_empty() && self.dispatch(&line)? {
+                    return Ok(true);
                 }
 
                 input.clear();
@@ -1520,10 +1518,8 @@ impl ChatApp {
                 self.scroll = self.scroll.saturating_sub(10);
             }
 
-            KeyCode::Char(character) => {
-                if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                    self.input.push(character);
-                }
+            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.push(character);
             }
 
             _ => {}
@@ -1733,11 +1729,11 @@ fn spawn_session(
             }
         };
 
-        if let Ok(mut sessions) = sessions.lock() {
-            if let Some(handle) = sessions.get_mut(&label) {
-                handle.fingerprint = Some(fingerprint.clone());
-                handle.status = SessionStatus::Connected;
-            }
+        if let Ok(mut sessions) = sessions.lock()
+            && let Some(handle) = sessions.get_mut(&label)
+        {
+            handle.fingerprint = Some(fingerprint.clone());
+            handle.status = SessionStatus::Connected;
         }
 
         let _ = events_tx.send(NetEvent::Ready {
