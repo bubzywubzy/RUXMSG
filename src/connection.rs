@@ -258,10 +258,11 @@ impl TcpConnectionReader {
             }
             MessageType::Close => {
                 let close = ClosePayload::decode(&frame)?;
-                self.manager
-                    .lock()
-                    .expect("manager mutex is not poisoned")
-                    .close();
+                let mut manager = self.manager.lock().expect("manager mutex is not poisoned");
+                if close.session_id != Some(manager.active_session_id()) {  
+                    return Err(Error::InvalidClosePayload);
+                }
+                manager.close();
                 Ok(ConnectionEvent::PeerClosed(close.reason))
             }
             _ => Err(Error::InvalidHandshake),
@@ -348,6 +349,9 @@ impl TcpConnectionWriter {
             .lock()
             .expect("manager mutex is not poisoned")
             .close();
+
+        let _ = self.write.lock().expect("write mutex is not poisoned").shutdown(std::net::Shutdown::Both);    
+
         Ok(())
     }
 
