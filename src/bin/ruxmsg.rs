@@ -33,9 +33,9 @@
 //! The network session itself remains alive while the frontend changes.
 
 use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Command, Stdio};
+use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -43,16 +43,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers,
-};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use crossterm::event::{self, Event as CEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
-use ratatui::layout::{Constraint, Direction, Layout, Margin};
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -133,7 +127,6 @@ fn main() -> io::Result<()> {
 enum SessionStatus {
     Handshaking,
     Connected,
-    Closed(String),
 }
 
 impl SessionStatus {
@@ -141,7 +134,6 @@ impl SessionStatus {
         match self {
             Self::Handshaking => "handshaking".to_string(),
             Self::Connected => "connected".to_string(),
-            Self::Closed(reason) => format!("closed ({reason})"),
         }
     }
 }
@@ -152,7 +144,6 @@ struct PeerHandle {
     status: SessionStatus,
     outbound: bool,
     tx: mpsc::Sender<SessionCommand>,
-    messages: Vec<ChatMessage>,
 }
 
 /// Commands directed to one live session.
@@ -202,13 +193,11 @@ enum NetEvent {
 // =====================================================================
 
 struct ActiveIdentity {
-    profile: String,
     keypair: Arc<IdentityKeypair>,
 }
 
 struct PendingSas {
     label: String,
-    words: [&'static str; 3],
     answer_tx: mpsc::Sender<bool>,
 }
 
@@ -297,7 +286,6 @@ impl Application {
         store.save(&identity)?;
 
         self.identity = Some(ActiveIdentity {
-            profile: name.to_string(),
             keypair: Arc::new(identity),
         });
 
@@ -319,7 +307,6 @@ impl Application {
         let fingerprint = format_identity(&identity.identity());
 
         self.identity = Some(ActiveIdentity {
-            profile: name.to_string(),
             keypair: Arc::new(identity),
         });
 
@@ -624,11 +611,7 @@ impl Application {
                     words[0], words[1], words[2]
                 );
 
-                self.pending_sas = Some(PendingSas {
-                    label,
-                    words,
-                    answer_tx,
-                });
+                self.pending_sas = Some(PendingSas { label, answer_tx });
             }
 
             NetEvent::Ready { label, fingerprint } => {
@@ -855,10 +838,8 @@ impl Application {
 
                 self.clear_current_input()?;
 
-                if !line.is_empty() {
-                    if self.dispatch(&line)? {
-                        return Ok(true);
-                    }
+                if !line.is_empty() && self.dispatch(&line)? {
+                    return Ok(true);
                 }
 
                 input.clear();
@@ -1467,11 +1448,7 @@ impl ChatApp {
                             .to_string(),
                     });
 
-                    app.pending_sas = Some(PendingSas {
-                        label,
-                        words,
-                        answer_tx,
-                    });
+                    app.pending_sas = Some(PendingSas { label, answer_tx });
                 } else {
                     let _ = answer_tx.send(false);
                 }
@@ -1488,12 +1465,12 @@ impl ChatApp {
         match key.code {
             KeyCode::Esc => {
                 self.closed = true;
-                Ok(true)
+                return Ok(true);
             }
 
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.closed = true;
-                Ok(true)
+                return Ok(true);
             }
 
             KeyCode::Enter => {
@@ -1541,10 +1518,8 @@ impl ChatApp {
                 self.scroll = self.scroll.saturating_sub(10);
             }
 
-            KeyCode::Char(character) => {
-                if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                    self.input.push(character);
-                }
+            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.push(character);
             }
 
             _ => {}
@@ -1754,11 +1729,11 @@ fn spawn_session(
             }
         };
 
-        if let Ok(mut sessions) = sessions.lock() {
-            if let Some(handle) = sessions.get_mut(&label) {
-                handle.fingerprint = Some(fingerprint.clone());
-                handle.status = SessionStatus::Connected;
-            }
+        if let Ok(mut sessions) = sessions.lock()
+            && let Some(handle) = sessions.get_mut(&label)
+        {
+            handle.fingerprint = Some(fingerprint.clone());
+            handle.status = SessionStatus::Connected;
         }
 
         let _ = events_tx.send(NetEvent::Ready {
@@ -1939,7 +1914,7 @@ fn tailscale_missing_message() -> String {
 }
 
 fn tailscale_status() {
-    match Command::new("tailscale")
+    match ProcessCommand::new("tailscale")
         .args(["status", "--json"])
         .output()
     {
@@ -1969,7 +1944,7 @@ fn tailscale_status() {
 }
 
 fn tailscale_up() {
-    match Command::new("tailscale")
+    match ProcessCommand::new("tailscale")
         .arg("up")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -1990,7 +1965,7 @@ fn tailscale_up() {
 }
 
 fn tailscale_ip() {
-    match Command::new("tailscale").arg("ip").output() {
+    match ProcessCommand::new("tailscale").arg("ip").output() {
         Ok(output) if output.status.success() => {
             print!("{}", String::from_utf8_lossy(&output.stdout));
         }

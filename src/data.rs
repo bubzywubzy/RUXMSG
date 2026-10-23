@@ -175,7 +175,7 @@ impl DataSender {
             &plaintext,
         )?;
 
-        self.chain_key = next_chain;
+        self.chain_key = Zeroizing::new(next_chain);
 
         self.counter = self.counter.checked_add(1).ok_or(Error::CounterOverflow)?;
 
@@ -260,7 +260,7 @@ impl DataReceiver {
             &message_nonce(payload.direction_id, payload.message_counter),
             &aad,
             &payload.ciphertext,
-        ))?;
+        )?);
 
         // VALIDATE:
         // Do not consume the message key until the authenticated plaintext
