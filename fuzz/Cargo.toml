@@ -53,3 +53,10 @@ path = "fuzz_targets/session_lifecycle.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ratchet_state"
+path = "fuzz_targets/ratchet_state.rs"
+test = false
+doc = false
+bench = false

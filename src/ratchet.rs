@@ -245,3 +245,33 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn replay_window_never_panics_on_arbitrary_counters(
+            counters in proptest::collection::vec(any::<u64>(), 1..100)
+        ) {
+            let mut window = ReplayWindow::new();
+            for counter in counters {
+                let _ = window.classify(counter);
+                let _ = window.accept(counter);
+            }
+        }
+
+        #[test]
+        fn receiving_chain_enforces_bounds_strictly(
+            counters in proptest::collection::vec(any::<u64>(), 1..50)
+        ) {
+            let mut chain = ReceivingChain::new([0xBB; 32], DirectionId::ResponderToInitiator);
+            for counter in counters {
+                let _ = chain.prepare_message_key(counter);
+                assert!(chain.skipped_len() <= 65);
+            }
+        }
+    }
+}
