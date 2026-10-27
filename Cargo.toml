@@ -39,7 +39,20 @@ unsafe_code = "forbid"
 all = "deny"
 correctness = "deny"
 
+[profile.dev]
+opt-level = 0
+debug = true
+strip = 'none'
+debug-assertions = true
+overflow-checks = true
+incremental = true
+
 [profile.release]
+opt-level = 3
+debug = 1
+strip = "symbols"
 codegen-units = 1
 lto = "thin"
-strip = "symbols"
+incremental = false
+debug-assertions = false
+overflow-checks = true
