@@ -1,8 +1,9 @@
 //! Handshake payloads, transcript assembly, signatures, and confirmation.
 //!
-//! The handshake is deliberately split into an unsigned HELLO exchange, a
-//! transcript-bound signature exchange, and session confirmation. Do not add
-//! fields to these payloads without updating the normative wire specification.
+//! The handshake begins with an unsigned initiator COMMIT/HELLO exchange,
+//! followed by transcript-bound signatures and session confirmation.
+//! Payload fields are normative wire data; changes require corresponding
+//! updates to the protocol specification and conformance vectors.
 
 use ciborium::value::Value;
 
@@ -52,7 +53,8 @@ impl TryFrom<u64> for HelloRole {
     }
 }
 
-/// Stage-0 HELLO. Each peer sends only its own identity and fresh session inputs.
+/// Unsigned HELLO containing only the sender's identity and fresh session
+/// inputs. The initiator sends this after receiving the responder's HELLO.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HelloPayload {
     pub cipher_suite: u64,
@@ -65,13 +67,20 @@ pub struct HelloPayload {
 }
 
 impl HelloPayload {
-    /// Encodes a stage-0 HELLO as a HANDSHAKE or REKEY frame.
+    /// Encodes a HELLO using the purpose-specific wire type.
     pub fn encode(&self) -> Result<Frame> {
-        if self.purpose == HandshakePurpose::Initial && self.previous_session_id.is_some()
-            || self.purpose == HandshakePurpose::Rekey && self.previous_session_id.is_none()
+        if self.cipher_suite != 1 {
+            return Err(Error::InvalidHandshake);
+        }
+
+        if self.purpose == HandshakePurpose::Initial
+            && self.previous_session_id.is_some()
+            || self.purpose == HandshakePurpose::Rekey
+                && self.previous_session_id.is_none()
         {
             return Err(Error::InvalidHandshake);
         }
+
         let mut entries = vec![
             (uint(0), uint(1u64)),
             (uint(1), uint(self.cipher_suite)),
@@ -81,79 +90,246 @@ impl HelloPayload {
             (uint(5), bytes(&self.ephemeral_public_key)),
             (uint(6), bytes(&self.nonce)),
         ];
+
         if let Some(session_id) = self.previous_session_id {
             entries.push((uint(7), bytes(session_id.as_bytes())));
         }
+
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&Value::Map(entries), &mut encoded)
             .map_err(|error| Error::Encoding(error.to_string()))?;
+
         Frame::new(message_type_for_purpose(self.purpose), encoded)
     }
 
-    /// Decodes and strictly validates a stage-0 HELLO frame.
+    /// Decodes and strictly validates a HELLO frame.
     pub fn decode(frame: &Frame) -> Result<Self> {
-        if frame.message_type != MessageType::Handshake && frame.message_type != MessageType::Rekey
+        if frame.message_type != MessageType::Handshake
+            && frame.message_type != MessageType::Rekey
         {
             return Err(Error::InvalidHandshake);
         }
+
         frame.validate_cbor_map()?;
+
         let value: Value = ciborium::de::from_reader(frame.payload.as_slice())
             .map_err(|error| Error::Encoding(error.to_string()))?;
+
         let Value::Map(entries) = value else {
             return Err(Error::InvalidHandshake);
         };
+
         if !(7..=8).contains(&entries.len()) {
             return Err(Error::InvalidHandshake);
         }
+
         let mut fields: Vec<Option<Value>> = (0..8).map(|_| None).collect();
+
         for (key, value) in entries {
             let Value::Integer(key) = key else {
                 return Err(Error::InvalidHandshake);
             };
-            let key = usize::try_from(key).map_err(|_| Error::InvalidHandshake)?;
+
+            let key =
+                usize::try_from(key).map_err(|_| Error::InvalidHandshake)?;
+
             if key >= fields.len() || fields[key].is_some() {
                 return Err(Error::InvalidHandshake);
             }
+
             fields[key] = Some(value);
         }
-        let protocol_version = uint_value(fields[0].take().ok_or(Error::InvalidHandshake)?)?;
+
+        let protocol_version =
+            uint_value(fields[0].take().ok_or(Error::InvalidHandshake)?)?;
+
         if protocol_version != 1 {
             return Err(Error::UnsupportedVersion(protocol_version as u8));
         }
+
+        let cipher_suite =
+            uint_value(fields[1].take().ok_or(Error::InvalidHandshake)?)?;
+
+        if cipher_suite != 1 {
+            return Err(Error::InvalidHandshake);
+        }
+
         let payload = Self {
-            cipher_suite: uint_value(fields[1].take().ok_or(Error::InvalidHandshake)?)?,
+            cipher_suite,
             purpose: HandshakePurpose::try_from(uint_value(
                 fields[2].take().ok_or(Error::InvalidHandshake)?,
             )?)?,
             role: HelloRole::try_from(uint_value(
                 fields[3].take().ok_or(Error::InvalidHandshake)?,
             )?)?,
-            identity_public_key: identity_value(fields[4].take().ok_or(Error::InvalidHandshake)?)?,
+            identity_public_key: identity_value(
+                fields[4].take().ok_or(Error::InvalidHandshake)?,
+            )?,
             ephemeral_public_key: array_value(
                 fields[5].take().ok_or(Error::InvalidHandshake)?,
                 "ephemeral",
             )?,
-            nonce: array_value(fields[6].take().ok_or(Error::InvalidHandshake)?, "nonce")?,
+            nonce: array_value(
+                fields[6].take().ok_or(Error::InvalidHandshake)?,
+                "nonce",
+            )?,
             previous_session_id: fields[7]
                 .take()
                 .map(|value| array_value(value, "session ID"))
                 .transpose()?
                 .map(SessionId::from_bytes),
         };
-        if payload.purpose == HandshakePurpose::Initial && payload.previous_session_id.is_some()
-            || payload.purpose == HandshakePurpose::Rekey && payload.previous_session_id.is_none()
+
+        if payload.purpose == HandshakePurpose::Initial
+            && payload.previous_session_id.is_some()
+            || payload.purpose == HandshakePurpose::Rekey
+                && payload.previous_session_id.is_none()
         {
             return Err(Error::InvalidHandshake);
         }
+
         if frame.message_type != message_type_for_purpose(payload.purpose) {
             return Err(Error::InvalidHandshake);
         }
+
         Ok(payload)
     }
 }
 
-/// HELLO/HANDSHAKE frames for an initial session use `HANDSHAKE` (0x01);
-/// rekey frames use the distinct `REKEY` (0x04) type per the wire registry.
+/// Initiator commitment to the exact encoded HELLO payload it will reveal.
+/// The responder verifies this commitment after receiving the initiator HELLO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitPayload {
+    pub cipher_suite: u64,
+    pub purpose: HandshakePurpose,
+    pub commitment: [u8; 32],
+    pub previous_session_id: Option<SessionId>,
+}
+
+impl CommitPayload {
+    /// Encodes the initiator's COMMIT using the purpose-specific wire type.
+    pub fn encode(&self) -> Result<Frame> {
+        if self.cipher_suite != 1 {
+            return Err(Error::InvalidHandshake);
+        }
+
+        if self.purpose == HandshakePurpose::Initial
+            && self.previous_session_id.is_some()
+            || self.purpose == HandshakePurpose::Rekey
+                && self.previous_session_id.is_none()
+        {
+            return Err(Error::InvalidHandshake);
+        }
+
+        let mut entries = vec![
+            (uint(0), uint(1u64)),
+            (uint(1), uint(self.cipher_suite)),
+            (uint(2), uint(self.purpose as u8)),
+            (uint(3), bytes(&self.commitment)),
+        ];
+
+        if let Some(session_id) = self.previous_session_id {
+            entries.push((uint(4), bytes(session_id.as_bytes())));
+        }
+
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut encoded)
+            .map_err(|error| Error::Encoding(error.to_string()))?;
+
+        Frame::new(message_type_for_purpose(self.purpose), encoded)
+    }
+
+    /// Decodes and validates an initiator COMMIT.
+    pub fn decode(frame: &Frame) -> Result<Self> {
+        if frame.message_type != MessageType::Handshake
+            && frame.message_type != MessageType::Rekey
+        {
+            return Err(Error::InvalidHandshake);
+        }
+
+        frame.validate_cbor_map()?;
+
+        let value: Value = ciborium::de::from_reader(frame.payload.as_slice())
+            .map_err(|error| Error::Encoding(error.to_string()))?;
+
+        let Value::Map(entries) = value else {
+            return Err(Error::InvalidHandshake);
+        };
+
+        if !(4..=5).contains(&entries.len()) {
+            return Err(Error::InvalidHandshake);
+        }
+
+        let mut fields: Vec<Option<Value>> = (0..5).map(|_| None).collect();
+
+        for (key, value) in entries {
+            let Value::Integer(key) = key else {
+                return Err(Error::InvalidHandshake);
+            };
+
+            let key =
+                usize::try_from(key).map_err(|_| Error::InvalidHandshake)?;
+
+            if key >= fields.len() || fields[key].is_some() {
+                return Err(Error::InvalidHandshake);
+            }
+
+            fields[key] = Some(value);
+        }
+
+        let protocol_version =
+            uint_value(fields[0].take().ok_or(Error::InvalidHandshake)?)?;
+
+        if protocol_version != 1 {
+            return Err(Error::UnsupportedVersion(protocol_version as u8));
+        }
+
+        let cipher_suite =
+            uint_value(fields[1].take().ok_or(Error::InvalidHandshake)?)?;
+
+        if cipher_suite != 1 {
+            return Err(Error::InvalidHandshake);
+        }
+
+        let purpose = HandshakePurpose::try_from(uint_value(
+            fields[2].take().ok_or(Error::InvalidHandshake)?,
+        )?)?;
+
+        let commitment = array_value(
+            fields[3].take().ok_or(Error::InvalidHandshake)?,
+            "commitment",
+        )?;
+
+        let previous_session_id = fields[4]
+            .take()
+            .map(|value| array_value(value, "session ID"))
+            .transpose()?
+            .map(SessionId::from_bytes);
+
+        let payload = Self {
+            cipher_suite,
+            purpose,
+            commitment,
+            previous_session_id,
+        };
+
+        if payload.purpose == HandshakePurpose::Initial
+            && payload.previous_session_id.is_some()
+            || payload.purpose == HandshakePurpose::Rekey
+                && payload.previous_session_id.is_none()
+        {
+            return Err(Error::InvalidHandshake);
+        }
+
+        if frame.message_type != message_type_for_purpose(payload.purpose) {
+            return Err(Error::InvalidHandshake);
+        }
+
+        Ok(payload)
+    }
+}
+
+/// Maps the handshake purpose to its corresponding wire message type.
 fn message_type_for_purpose(purpose: HandshakePurpose) -> MessageType {
     match purpose {
         HandshakePurpose::Initial => MessageType::Handshake,
@@ -161,6 +337,7 @@ fn message_type_for_purpose(purpose: HandshakePurpose) -> MessageType {
     }
 }
 
+/// Builds the transcript from the validated initiator and responder HELLOs.
 pub fn transcript_from_hellos(
     initiator: &HelloPayload,
     responder: &HelloPayload,
@@ -173,6 +350,7 @@ pub fn transcript_from_hellos(
     {
         return Err(Error::InvalidHandshake);
     }
+
     Ok(Transcript {
         handshake_type: initiator.purpose as u8,
         cipher_suite: initiator.cipher_suite,
@@ -204,6 +382,9 @@ impl TryFrom<u64> for HandshakeType {
     }
 }
 
+/// Transcript-bound authentication payload exchanged after HELLOs.
+/// Stage 0 carries the initiator signature; stage 1 adds the responder
+/// signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandshakePayload {
     pub handshake_type: HandshakeType,
@@ -221,7 +402,7 @@ pub struct HandshakePayload {
 }
 
 impl HandshakePayload {
-    /// Returns the transcript-bearing fields, excluding signatures.
+    /// Returns the transcript fields covered by the handshake signatures.
     pub fn transcript(&self) -> Transcript {
         Transcript {
             handshake_type: self.handshake_type as u8,
@@ -236,17 +417,30 @@ impl HandshakePayload {
         }
     }
 
-    /// Encodes a signed handshake stage using the purpose-specific message type.
+    /// Encodes a signed handshake stage using the purpose-specific wire type.
     pub fn encode(&self) -> Result<Frame> {
-        if self.stage > 1 || (self.stage == 0 && self.responder_signature.is_some()) {
+        if self.cipher_suite != 1 {
             return Err(Error::InvalidHandshake);
         }
-        if self.handshake_type == HandshakeType::Initial && self.previous_session_id.is_some() {
+
+        if self.stage > 1
+            || (self.stage == 0 && self.responder_signature.is_some())
+        {
             return Err(Error::InvalidHandshake);
         }
-        if self.handshake_type == HandshakeType::Rekey && self.previous_session_id.is_none() {
+
+        if self.handshake_type == HandshakeType::Initial
+            && self.previous_session_id.is_some()
+        {
             return Err(Error::InvalidHandshake);
         }
+
+        if self.handshake_type == HandshakeType::Rekey
+            && self.previous_session_id.is_none()
+        {
+            return Err(Error::InvalidHandshake);
+        }
+
         let mut entries = vec![
             (uint(0), uint(self.handshake_type as u8)),
             (uint(1), uint(self.stage)),
@@ -259,83 +453,122 @@ impl HandshakePayload {
             (uint(8), bytes(&self.responder_nonce)),
             (uint(10), bytes(&self.initiator_signature)),
         ];
+
         if let Some(session_id) = self.previous_session_id {
             entries.push((uint(9), bytes(session_id.as_bytes())));
         }
+
         if let Some(signature) = self.responder_signature {
             entries.push((uint(11), bytes(&signature)));
         }
+
         entries.sort_by_key(|(key, _)| match key {
             Value::Integer(value) => u64::try_from(*value).unwrap_or(u64::MAX),
             _ => u64::MAX,
         });
+
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&Value::Map(entries), &mut encoded)
             .map_err(|error| Error::Encoding(error.to_string()))?;
+
         Frame::new(
             message_type_for_handshake_type(self.handshake_type),
             encoded,
         )
     }
 
-    /// Decodes and strictly validates a signed handshake stage.
+    /// Decodes and strictly validates a signed handshake payload.
     pub fn decode(frame: &Frame) -> Result<Self> {
-        if frame.message_type != MessageType::Handshake && frame.message_type != MessageType::Rekey
+        if frame.message_type != MessageType::Handshake
+            && frame.message_type != MessageType::Rekey
         {
             return Err(Error::InvalidHandshake);
         }
+
         frame.validate_cbor_map()?;
+
         let value: Value = ciborium::de::from_reader(frame.payload.as_slice())
             .map_err(|error| Error::Encoding(error.to_string()))?;
+
         let Value::Map(entries) = value else {
             return Err(Error::InvalidHandshake);
         };
+
         let mut fields: Vec<Option<Value>> = (0..12).map(|_| None).collect();
+
         for (key, value) in entries {
             let Value::Integer(key) = key else {
                 return Err(Error::InvalidHandshake);
             };
-            let key = usize::try_from(key).map_err(|_| Error::InvalidHandshake)?;
+
+            let key =
+                usize::try_from(key).map_err(|_| Error::InvalidHandshake)?;
+
             if key >= fields.len() || fields[key].is_some() {
                 return Err(Error::InvalidHandshake);
             }
+
             fields[key] = Some(value);
         }
+
         let handshake_type = HandshakeType::try_from(uint_value(
             fields[0].take().ok_or(Error::InvalidHandshake)?,
         )?)?;
+
         let stage = u8::try_from(uint_value(
             fields[1].take().ok_or(Error::InvalidHandshake)?,
         )?)
         .map_err(|_| Error::InvalidHandshake)?;
-        let cipher_suite = uint_value(fields[2].take().ok_or(Error::InvalidHandshake)?)?;
-        let initiator_identity = identity_value(fields[3].take().ok_or(Error::InvalidHandshake)?)?;
-        let responder_identity = identity_value(fields[4].take().ok_or(Error::InvalidHandshake)?)?;
+
+        let cipher_suite =
+            uint_value(fields[2].take().ok_or(Error::InvalidHandshake)?)?;
+
+        if cipher_suite != 1 {
+            return Err(Error::InvalidHandshake);
+        }
+
+        let initiator_identity =
+            identity_value(fields[3].take().ok_or(Error::InvalidHandshake)?)?;
+
+        let responder_identity =
+            identity_value(fields[4].take().ok_or(Error::InvalidHandshake)?)?;
+
         let initiator_ephemeral = array_value(
             fields[5].take().ok_or(Error::InvalidHandshake)?,
             "ephemeral",
         )?;
+
         let responder_ephemeral = array_value(
             fields[6].take().ok_or(Error::InvalidHandshake)?,
             "ephemeral",
         )?;
-        let initiator_nonce =
-            array_value(fields[7].take().ok_or(Error::InvalidHandshake)?, "nonce")?;
-        let responder_nonce =
-            array_value(fields[8].take().ok_or(Error::InvalidHandshake)?, "nonce")?;
+
+        let initiator_nonce = array_value(
+            fields[7].take().ok_or(Error::InvalidHandshake)?,
+            "nonce",
+        )?;
+
+        let responder_nonce = array_value(
+            fields[8].take().ok_or(Error::InvalidHandshake)?,
+            "nonce",
+        )?;
+
         let previous_session_id = fields[9]
             .take()
             .map(|value| array_value(value, "session ID"))
             .transpose()?
             .map(SessionId::from_bytes);
+
         let initiator_signature = array_value(
             fields[10].take().ok_or(Error::InvalidHandshake)?,
             "signature",
         )?;
+
         let responder_signature = fields[11]
             .take()
             .map(|value| array_value(value, "signature"))
             .transpose()?;
+
         let payload = Self {
             handshake_type,
             stage,
@@ -350,34 +583,45 @@ impl HandshakePayload {
             initiator_signature,
             responder_signature,
         };
+
         if payload.stage > 1
             || (payload.stage == 1 && payload.responder_signature.is_none())
             || (payload.stage == 0 && payload.responder_signature.is_some())
         {
             return Err(Error::InvalidHandshake);
         }
-        if payload.handshake_type == HandshakeType::Initial && payload.previous_session_id.is_some()
+
+        if payload.handshake_type == HandshakeType::Initial
+            && payload.previous_session_id.is_some()
         {
             return Err(Error::InvalidHandshake);
         }
-        if payload.handshake_type == HandshakeType::Rekey && payload.previous_session_id.is_none() {
+
+        if payload.handshake_type == HandshakeType::Rekey
+            && payload.previous_session_id.is_none()
+        {
             return Err(Error::InvalidHandshake);
         }
+
         if frame.message_type != message_type_for_handshake_type(payload.handshake_type) {
             return Err(Error::InvalidHandshake);
         }
+
         Ok(payload)
     }
 }
 
-/// Signed HANDSHAKE frames mirror the same HANDSHAKE-vs-REKEY split as HELLO.
-fn message_type_for_handshake_type(handshake_type: HandshakeType) -> MessageType {
+/// Maps the signed handshake purpose to its corresponding wire message type.
+fn message_type_for_handshake_type(
+    handshake_type: HandshakeType,
+) -> MessageType {
     match handshake_type {
         HandshakeType::Initial => MessageType::Handshake,
         HandshakeType::Rekey => MessageType::Rekey,
     }
 }
 
+/// Final session confirmation containing the derived session ID and MAC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionConfirmPayload {
     pub session_id: SessionId,
@@ -391,42 +635,56 @@ impl SessionConfirmPayload {
         if self.role > 1 {
             return Err(Error::InvalidHandshake);
         }
+
         let value = Value::Map(vec![
             (uint(0), bytes(self.session_id.as_bytes())),
             (uint(1), uint(self.role)),
             (uint(2), bytes(&self.confirmation)),
         ]);
+
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&value, &mut encoded)
             .map_err(|error| Error::Encoding(error.to_string()))?;
+
         Frame::new(MessageType::SessionConfirm, encoded)
     }
 
-    /// Decodes a confirmation payload without accepting it as valid yet.
+    /// Decodes a confirmation payload without accepting it as authenticated.
     pub fn decode(frame: &Frame) -> Result<Self> {
         if frame.message_type != MessageType::SessionConfirm {
             return Err(Error::ConfirmationInvalid);
         }
+
         frame.validate_cbor_map()?;
+
         let value: Value = ciborium::de::from_reader(frame.payload.as_slice())
             .map_err(|error| Error::Encoding(error.to_string()))?;
+
         let Value::Map(entries) = value else {
             return Err(Error::ConfirmationInvalid);
         };
+
         if entries.len() != 3 {
             return Err(Error::ConfirmationInvalid);
         }
+
         let mut fields: Vec<Option<Value>> = (0..3).map(|_| None).collect();
+
         for (key, value) in entries {
             let Value::Integer(key) = key else {
                 return Err(Error::ConfirmationInvalid);
             };
-            let key = usize::try_from(key).map_err(|_| Error::ConfirmationInvalid)?;
+
+            let key =
+                usize::try_from(key).map_err(|_| Error::ConfirmationInvalid)?;
+
             if key >= fields.len() || fields[key].is_some() {
                 return Err(Error::ConfirmationInvalid);
             }
+
             fields[key] = Some(value);
         }
+
         Ok(Self {
             session_id: SessionId::from_bytes(array_value(
                 fields[0].take().ok_or(Error::ConfirmationInvalid)?,
@@ -443,11 +701,17 @@ impl SessionConfirmPayload {
         })
     }
 
-    /// Verifies the session ID, role, and confirmation MAC against derived keys.
-    pub fn verify(&self, keys: &SessionKeys, hash: &[u8; 32]) -> Result<()> {
+    /// Verifies the session ID, role, and confirmation MAC against the
+    /// derived session keys.
+    pub fn verify(
+        &self,
+        keys: &SessionKeys,
+        hash: &[u8; 32],
+    ) -> Result<()> {
         if self.session_id != keys.session_id || self.role > 1 {
             return Err(Error::ConfirmationInvalid);
         }
+
         verify_confirmation(
             &keys.confirmation_key,
             hash,
@@ -463,16 +727,21 @@ pub fn verify_handshake(
     shared_secret: &[u8; 32],
     sas_approved: bool,
 ) -> Result<(SessionKeys, [u8; 32])> {
-    verify_handshake_for_role(payload, shared_secret, sas_approved)
+    let transcript = payload.transcript();
+
+    verify_handshake_for_role(
+        payload,
+        &transcript,
+        shared_secret,
+        sas_approved,
+    )
 }
 
-/// Verifies the SAS approval, transcript signatures, and derives candidate
-/// session keys.
-///
-/// SAS approval is mandatory for every handshake, including reconnects with a
-/// previously observed public identity.
+/// Verifies SAS approval and transcript signatures, then derives session keys.
+/// SAS approval is required for every handshake, including reconnects.
 pub fn verify_handshake_for_role(
     payload: &HandshakePayload,
+    local_transcript: &Transcript,
     shared_secret: &[u8; 32],
     sas_approved: bool,
 ) -> Result<(SessionKeys, [u8; 32])> {
@@ -480,7 +749,13 @@ pub fn verify_handshake_for_role(
         return Err(Error::SasRejected);
     }
 
-    let transcript_hash = transcript_hash(&payload.transcript().encode()?);
+    // Bind AUTH to the exact HELLO-derived transcript used for SAS and
+    // session-key derivation.
+    if payload.transcript() != *local_transcript {
+        return Err(Error::InvalidHandshake);
+    }
+
+    let transcript_hash = transcript_hash(&local_transcript.encode()?);
 
     verify_transcript_signature(
         &payload.initiator_identity,
@@ -506,7 +781,7 @@ pub fn verify_handshake_for_role(
     ))
 }
 
-/// Applies the raw-public-key tie-break for simultaneous rekey attempts.
+/// Resolves simultaneous rekey attempts by comparing raw identity keys.
 pub fn local_identity_wins_rekey_glare(
     local: &PeerIdentity,
     remote_initiator: &PeerIdentity,
@@ -517,15 +792,19 @@ pub fn local_identity_wins_rekey_glare(
 fn uint(value: impl Into<i128>) -> Value {
     Value::Integer((value.into() as u64).into())
 }
+
 fn bytes(value: &[u8]) -> Value {
     Value::Bytes(value.to_vec())
 }
+
 fn uint_value(value: Value) -> Result<u64> {
     let Value::Integer(value) = value else {
         return Err(Error::InvalidHandshake);
     };
+
     u64::try_from(value).map_err(|_| Error::InvalidHandshake)
 }
+
 fn bytes_value(value: Value, kind: &'static str) -> Result<Vec<u8>> {
     let Value::Bytes(value) = value else {
         return Err(Error::InvalidLength {
@@ -534,10 +813,16 @@ fn bytes_value(value: Value, kind: &'static str) -> Result<Vec<u8>> {
             actual: 0,
         });
     };
+
     Ok(value)
 }
-fn array_value<const N: usize>(value: Value, kind: &'static str) -> Result<[u8; N]> {
+
+fn array_value<const N: usize>(
+    value: Value,
+    kind: &'static str,
+) -> Result<[u8; N]> {
     let bytes = bytes_value(value, kind)?;
+
     bytes
         .try_into()
         .map_err(|bytes: Vec<u8>| Error::InvalidLength {
@@ -546,6 +831,7 @@ fn array_value<const N: usize>(value: Value, kind: &'static str) -> Result<[u8; 
             actual: bytes.len(),
         })
 }
+
 fn identity_value(value: Value) -> Result<PeerIdentity> {
     Ok(PeerIdentity::from_bytes(array_value(value, "identity")?))
 }
@@ -553,7 +839,7 @@ fn identity_value(value: Value) -> Result<PeerIdentity> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::IdentityKeypair;
+    use crate::crypto::{IdentityKeypair, commit_hash};
 
     #[test]
     fn symmetric_hellos_form_a_transcript_after_both_arrive() {
@@ -566,6 +852,7 @@ mod tests {
             nonce: [3; 16],
             previous_session_id: None,
         };
+
         let responder = HelloPayload {
             cipher_suite: 1,
             purpose: HandshakePurpose::Initial,
@@ -575,17 +862,122 @@ mod tests {
             nonce: [6; 16],
             previous_session_id: None,
         };
-        let decoded_initiator = HelloPayload::decode(&initiator.encode().unwrap()).unwrap();
-        let decoded_responder = HelloPayload::decode(&responder.encode().unwrap()).unwrap();
-        let transcript = transcript_from_hellos(&decoded_initiator, &decoded_responder).unwrap();
+
+        let decoded_initiator =
+            HelloPayload::decode(&initiator.encode().unwrap()).unwrap();
+
+        let decoded_responder =
+            HelloPayload::decode(&responder.encode().unwrap()).unwrap();
+
+        let transcript =
+            transcript_from_hellos(&decoded_initiator, &decoded_responder)
+                .unwrap();
+
         assert_eq!(transcript.initiator_ephemeral, [2; 32]);
         assert_eq!(transcript.responder_nonce, [6; 16]);
+    }
+
+    #[test]
+    fn commit_round_trips_and_binds_to_exact_hello_payload() {
+        let hello = HelloPayload {
+            cipher_suite: 1,
+            purpose: HandshakePurpose::Initial,
+            role: HelloRole::Initiator,
+            identity_public_key: PeerIdentity::from_bytes([1; 32]),
+            ephemeral_public_key: [2; 32],
+            nonce: [3; 16],
+            previous_session_id: None,
+        };
+
+        let hello_frame = hello.encode().unwrap();
+        let commitment = commit_hash(&hello_frame.payload);
+
+        let commit = CommitPayload {
+            cipher_suite: 1,
+            purpose: HandshakePurpose::Initial,
+            commitment,
+            previous_session_id: None,
+        };
+
+        let frame = commit.encode().unwrap();
+        let decoded = CommitPayload::decode(&frame).unwrap();
+
+        assert_eq!(decoded, commit);
+        assert_eq!(
+            commit_hash(&hello_frame.payload),
+            decoded.commitment
+        );
+    }
+
+    #[test]
+    fn rekey_commit_uses_rekey_wire_type() {
+        let session_id = SessionId::from_bytes([9; 16]);
+
+        let commit = CommitPayload {
+            cipher_suite: 1,
+            purpose: HandshakePurpose::Rekey,
+            commitment: [7; 32],
+            previous_session_id: Some(session_id),
+        };
+
+        let frame = commit.encode().unwrap();
+
+        assert_eq!(frame.message_type, MessageType::Rekey);
+        assert_eq!(CommitPayload::decode(&frame).unwrap(), commit);
+    }
+
+    #[test]
+    fn commit_rejects_wrong_message_type() {
+        let commit = CommitPayload {
+            cipher_suite: 1,
+            purpose: HandshakePurpose::Initial,
+            commitment: [7; 32],
+            previous_session_id: None,
+        };
+
+        let frame = commit.encode().unwrap();
+
+        let mut wrong_type_frame = frame.clone();
+        wrong_type_frame.message_type = MessageType::Rekey;
+
+        assert_eq!(
+            CommitPayload::decode(&wrong_type_frame),
+            Err(Error::InvalidHandshake)
+        );
+    }
+
+    #[test]
+    fn commit_rejects_invalid_previous_session_id_rules() {
+        let initial = CommitPayload {
+            cipher_suite: 1,
+            purpose: HandshakePurpose::Initial,
+            commitment: [7; 32],
+            previous_session_id: Some(SessionId::from_bytes([9; 16])),
+        };
+
+        assert_eq!(
+            initial.encode(),
+            Err(Error::InvalidHandshake)
+        );
+
+        let rekey = CommitPayload {
+            cipher_suite: 1,
+            purpose: HandshakePurpose::Rekey,
+            commitment: [7; 32],
+            previous_session_id: None,
+        };
+
+        assert_eq!(
+            rekey.encode(),
+            Err(Error::InvalidHandshake)
+        );
     }
 
     #[test]
     fn signed_handshake_round_trips_and_verifies() {
         let initiator = IdentityKeypair::from_bytes(&[1; 32]);
         let responder = IdentityKeypair::from_bytes(&[2; 32]);
+
         let mut payload = HandshakePayload {
             handshake_type: HandshakeType::Initial,
             stage: 0,
@@ -600,10 +992,15 @@ mod tests {
             initiator_signature: [0; 64],
             responder_signature: None,
         };
+
         let hash = transcript_hash(&payload.transcript().encode().unwrap());
-        payload.initiator_signature = initiator.sign_transcript(&hash, true);
+
+        payload.initiator_signature =
+            initiator.sign_transcript(&hash, true);
+
         let frame = payload.encode().unwrap();
         let decoded = HandshakePayload::decode(&frame).unwrap();
+
         verify_handshake(&decoded, &[7; 32], true).unwrap();
     }
 
@@ -611,6 +1008,7 @@ mod tests {
     fn first_contact_requires_sas() {
         let initiator = IdentityKeypair::from_bytes(&[1; 32]);
         let responder = IdentityKeypair::from_bytes(&[2; 32]);
+
         let mut payload = HandshakePayload {
             handshake_type: HandshakeType::Initial,
             stage: 0,
@@ -625,8 +1023,12 @@ mod tests {
             initiator_signature: [0; 64],
             responder_signature: None,
         };
+
         let hash = transcript_hash(&payload.transcript().encode().unwrap());
-        payload.initiator_signature = initiator.sign_transcript(&hash, true);
+
+        payload.initiator_signature =
+            initiator.sign_transcript(&hash, true);
+
         assert!(matches!(
             verify_handshake(&payload, &[7; 32], false),
             Err(Error::SasRejected)
@@ -639,6 +1041,7 @@ mod tests {
             &PeerIdentity::from_bytes([2; 32]),
             &PeerIdentity::from_bytes([1; 32]),
         ));
+
         assert!(!local_identity_wins_rekey_glare(
             &PeerIdentity::from_bytes([1; 32]),
             &PeerIdentity::from_bytes([2; 32]),
@@ -656,12 +1059,15 @@ mod tests {
             nonce: [3; 16],
             previous_session_id: Some(SessionId::from_bytes([9; 16])),
         };
+
         let frame = rekey_hello.encode().unwrap();
+
         assert_eq!(frame.message_type, MessageType::Rekey);
         assert_eq!(HelloPayload::decode(&frame).unwrap(), rekey_hello);
 
         let mut wrong_type_frame = frame.clone();
         wrong_type_frame.message_type = MessageType::Handshake;
+
         assert_eq!(
             HelloPayload::decode(&wrong_type_frame),
             Err(Error::InvalidHandshake)
@@ -669,6 +1075,7 @@ mod tests {
 
         let initiator = IdentityKeypair::from_bytes(&[1; 32]);
         let responder = IdentityKeypair::from_bytes(&[2; 32]);
+
         let mut payload = HandshakePayload {
             handshake_type: HandshakeType::Rekey,
             stage: 0,
@@ -683,10 +1090,48 @@ mod tests {
             initiator_signature: [0; 64],
             responder_signature: None,
         };
+
         let hash = transcript_hash(&payload.transcript().encode().unwrap());
-        payload.initiator_signature = initiator.sign_transcript(&hash, true);
+
+        payload.initiator_signature =
+            initiator.sign_transcript(&hash, true);
+
         let frame = payload.encode().unwrap();
+
         assert_eq!(frame.message_type, MessageType::Rekey);
-        assert_eq!(HandshakePayload::decode(&frame).unwrap(), payload);
+        assert_eq!(
+            HandshakePayload::decode(&frame).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn cipher_suite_must_be_supported() {
+        let hello = HelloPayload {
+            cipher_suite: 2,
+            purpose: HandshakePurpose::Initial,
+            role: HelloRole::Initiator,
+            identity_public_key: PeerIdentity::from_bytes([1; 32]),
+            ephemeral_public_key: [2; 32],
+            nonce: [3; 16],
+            previous_session_id: None,
+        };
+
+        assert_eq!(
+            hello.encode(),
+            Err(Error::InvalidHandshake)
+        );
+
+        let commit = CommitPayload {
+            cipher_suite: 2,
+            purpose: HandshakePurpose::Initial,
+            commitment: [4; 32],
+            previous_session_id: None,
+        };
+
+        assert_eq!(
+            commit.encode(),
+            Err(Error::InvalidHandshake)
+        );
     }
 }
