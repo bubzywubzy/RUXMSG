@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::handshake::HelloRole;
 use crate::manager::SessionManager;
 use crate::protocol::MessageType;
-use crate::transport::{Demuxer, Transport};
+use crate::transport::{Demuxer, SeededTransport, Transport};
 use crate::wire::Frame;
 
 /// An event surfaced while driving an established `PeerConnection`.
@@ -32,10 +32,11 @@ pub struct PeerConnection<T: Transport> {
 }
 
 impl<T: Transport> PeerConnection<T> {
-    /// Establishes an initial or rekey session as the initiator.
+    /// Establishes an initial session as the initiator.
     ///
-    /// `sas_approved` is called exactly once with the current three-word SAS;
-    /// returning `false` aborts the candidate session.
+    /// For an initial handshake, `sas_approved` is called exactly once with
+    /// the current three-word SAS. Returning `false` aborts the candidate
+    /// session.
     pub fn establish_as_initiator(
         mut transport: T,
         identity: IdentityKeypair,
@@ -43,10 +44,15 @@ impl<T: Transport> PeerConnection<T> {
         now: Instant,
     ) -> Result<Self> {
         let mut demux = Demuxer::new(&mut transport);
-        let established = establish_initiator(&mut demux, &identity, None, sas_approved)?;
+
+        let established =
+            establish_initiator(&mut demux, &identity, None, sas_approved)?;
+
         let pending = demux.take_buffered();
+
         let manager =
             SessionManager::from_initial_handshake(established, HelloRole::Initiator, now)?;
+
         Ok(Self {
             transport,
             identity,
@@ -55,10 +61,11 @@ impl<T: Transport> PeerConnection<T> {
         })
     }
 
-    /// Establishes an initial or rekey session as the responder.
+    /// Establishes an initial session as the responder.
     ///
-    /// `sas_approved` is called exactly once with the current three-word SAS;
-    /// returning `false` aborts the candidate session.
+    /// For an initial handshake, `sas_approved` is called exactly once with
+    /// the current three-word SAS. Returning `false` aborts the candidate
+    /// session.
     pub fn establish_as_responder(
         mut transport: T,
         identity: IdentityKeypair,
@@ -66,10 +73,15 @@ impl<T: Transport> PeerConnection<T> {
         now: Instant,
     ) -> Result<Self> {
         let mut demux = Demuxer::new(&mut transport);
-        let established = establish_responder(&mut demux, &identity, None, sas_approved)?;
+
+        let established =
+            establish_responder(&mut demux, &identity, None, sas_approved)?;
+
         let pending = demux.take_buffered();
+
         let manager =
             SessionManager::from_initial_handshake(established, HelloRole::Responder, now)?;
+
         Ok(Self {
             transport,
             identity,
@@ -83,43 +95,123 @@ impl<T: Transport> PeerConnection<T> {
         &self.manager
     }
 
-    /// Encrypts and sends `content` on the active session.
     /// Encrypts and sends application bytes on the active session.
     pub fn send(&mut self, content: &[u8]) -> Result<()> {
         let frame = self.manager.encrypt(content)?;
         self.transport.send(&frame)
     }
 
-    /// Reads and dispatches exactly one inbound event, preferring any frame
-    /// buffered by a prior handshake/rekey demux before reading fresh ones.
-    /// Receives one DATA or peer-CLOSE event, including buffered frames.
+    /// Reads and dispatches one inbound event.
+    ///
+    /// Buffered DATA/CLOSE frames are consumed before reading the transport.
+    /// An inbound REKEY frame is the opening COMMIT of a peer-initiated rekey;
+    /// it is handed back to `establish_responder` through `SeededTransport`
+    /// rather than being discarded.
     pub fn recv_next(&mut self) -> Result<ConnectionEvent> {
-        let frame = match self.pending.pop_front() {
-            Some(frame) => frame,
-            None => self.transport.receive()?,
-        };
-        match frame.message_type {
-            MessageType::Data => Ok(ConnectionEvent::Data(self.manager.decrypt(&frame)?)),
-            MessageType::Close => {
-                let close = ClosePayload::decode(&frame)?;
-                self.manager.close();
-                Ok(ConnectionEvent::PeerClosed(close.reason))
+        loop {
+            let frame = match self.pending.pop_front() {
+                Some(frame) => frame,
+                None => self.transport.receive()?,
+            };
+
+            match frame.message_type {
+                MessageType::Data => {
+                    return Ok(ConnectionEvent::Data(
+                        self.manager.decrypt(&frame)?,
+                    ));
+                }
+
+                MessageType::Close => {
+                    let close = ClosePayload::decode(&frame)?;
+
+                    let known =
+                        close.session_id == Some(self.manager.active_session_id())
+                            || close.session_id
+                                == self
+                                    .manager
+                                    .draining()
+                                    .map(|draining| draining.session_id());
+
+                    // D-017: ignore CLOSE frames for unknown sessions.
+                    if !known {
+                        continue;
+                    }
+
+                    self.manager.close();
+
+                    return Ok(ConnectionEvent::PeerClosed(close.reason));
+                }
+
+                MessageType::Rekey => {
+                    self.handle_peer_initiated_rekey(frame)?;
+                    continue;
+                }
+
+                _ => return Err(Error::InvalidHandshake),
             }
-            _ => Err(Error::InvalidHandshake),
         }
     }
 
-    /// Runs a rekey handshake over the same live transport, buffering any
-    /// DATA/CLOSE frames that arrive before the candidate is confirmed.
+    /// Handles a peer-initiated REKEY whose opening COMMIT has already been
+    /// consumed by `recv_next`.
+    ///
+    /// `SeededTransport` puts that COMMIT back in front of the underlying
+    /// transport so `establish_responder` can consume the complete handshake
+    /// using its normal protocol logic.
+    fn handle_peer_initiated_rekey(&mut self, seed: Frame) -> Result<()> {
+        self.manager.begin_rekey()?;
+
+        let previous_session_id = self.manager.active_session_id();
+
+        let mut seeded = SeededTransport::new(seed, &mut self.transport);
+        let mut demux = Demuxer::new(&mut seeded);
+
+        let result = establish_responder(
+            &mut demux,
+            &self.identity,
+            Some(previous_session_id),
+            |_| true,
+        );
+
+        self.pending.extend(demux.take_buffered());
+
+        let candidate = match result {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                let _ = self.manager.abort_rekey();
+                return Err(error);
+            }
+        };
+
+        if let Err(error) = self.manager.complete_rekey(
+            candidate,
+            HelloRole::Responder,
+            Instant::now(),
+        ) {
+            let _ = self.manager.abort_rekey();
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
+    /// Runs a locally initiated rekey handshake over the same live transport,
+    /// buffering any DATA/CLOSE frames that arrive before the candidate is
+    /// confirmed.
     pub fn rekey(
         &mut self,
         sas_approved: impl FnOnce([&'static str; 3]) -> bool,
         now: Instant,
     ) -> Result<()> {
         self.manager.begin_rekey()?;
+
         let previous_session_id = self.manager.active_session_id();
-        let local_role = self.manager.rekey_role(&self.identity.identity());
+        let local_role = self
+            .manager
+            .rekey_role(&self.identity.identity());
+
         let mut demux = Demuxer::new(&mut self.transport);
+
         let result = match local_role {
             HelloRole::Initiator => establish_initiator(
                 &mut demux,
@@ -127,6 +219,7 @@ impl<T: Transport> PeerConnection<T> {
                 Some(previous_session_id),
                 sas_approved,
             ),
+
             HelloRole::Responder => establish_responder(
                 &mut demux,
                 &self.identity,
@@ -134,9 +227,27 @@ impl<T: Transport> PeerConnection<T> {
                 sas_approved,
             ),
         };
+
         self.pending.extend(demux.take_buffered());
-        let candidate = result?;
-        self.manager.complete_rekey(candidate, local_role, now)
+
+        let candidate = match result {
+            Ok(candidate) => candidate,
+
+            Err(error) => {
+                let _ = self.manager.abort_rekey();
+                return Err(error);
+            }
+        };
+
+        if let Err(error) = self
+            .manager
+            .complete_rekey(candidate, local_role, now)
+        {
+            let _ = self.manager.abort_rekey();
+            return Err(error);
+        }
+
+        Ok(())
     }
 
     /// Drops any expired drained session; call periodically from the event loop.
@@ -152,8 +263,11 @@ impl<T: Transport> PeerConnection<T> {
             detail: None,
         }
         .encode()?;
+
         self.transport.send(&frame)?;
+
         self.manager.close();
+
         self.transport.close()
     }
 }
@@ -170,11 +284,14 @@ impl PeerConnection<crate::transport::FramedTransport<std::net::TcpStream>> {
     /// across a socket read.
     pub fn split_tcp(self) -> Result<(TcpConnectionReader, TcpConnectionWriter)> {
         let read = self.transport.into_inner();
+
         let write = read
             .try_clone()
             .map_err(|error| Error::Transport(error.to_string()))?;
+
         let write = std::sync::Arc::new(std::sync::Mutex::new(write));
         let manager = std::sync::Arc::new(std::sync::Mutex::new(self.manager));
+
         let reader = TcpConnectionReader {
             manager: manager.clone(),
             identity: self.identity,
@@ -184,7 +301,9 @@ impl PeerConnection<crate::transport::FramedTransport<std::net::TcpStream>> {
             },
             pending: self.pending,
         };
+
         let writer = TcpConnectionWriter { manager, write };
+
         Ok((reader, writer))
     }
 }
@@ -199,11 +318,18 @@ struct DuplexTcpTransport {
 impl Transport for DuplexTcpTransport {
     fn send(&mut self, frame: &Frame) -> Result<()> {
         use std::io::Write;
+
         let bytes = frame.encode()?;
-        let mut write = self.write.lock().expect("write mutex is not poisoned");
+
+        let mut write = self
+            .write
+            .lock()
+            .expect("write mutex is not poisoned");
+
         write
             .write_all(&bytes)
             .map_err(|error| Error::Transport(error.to_string()))?;
+
         write
             .flush()
             .map_err(|error| Error::Transport(error.to_string()))
@@ -211,23 +337,35 @@ impl Transport for DuplexTcpTransport {
 
     fn receive(&mut self) -> Result<Frame> {
         use std::io::Read;
+
         let mut header = [0; 6];
+
         self.read
             .read_exact(&mut header)
             .map_err(|error| Error::Transport(error.to_string()))?;
-        let length = u32::from_be_bytes(header[2..6].try_into().expect("header has four bytes"));
+
+        let length =
+            u32::from_be_bytes(header[2..6].try_into().expect("header has four bytes"));
+
         crate::protocol::FrameLength::new(length)?;
+
         let mut bytes = Vec::with_capacity(6 + length as usize);
         bytes.extend_from_slice(&header);
+
         let mut payload = vec![0; length as usize];
+
         self.read
             .read_exact(&mut payload)
             .map_err(|error| Error::Transport(error.to_string()))?;
+
         bytes.extend_from_slice(&payload);
+
         let (frame, consumed) = Frame::decode(&bytes)?;
+
         if consumed != bytes.len() {
             return Err(Error::TrailingFrameBytes);
         }
+
         Ok(frame)
     }
 
@@ -246,27 +384,125 @@ pub struct TcpConnectionReader {
 }
 
 impl TcpConnectionReader {
+    /// Receives one DATA or peer-CLOSE event.
+    ///
+    /// A peer-initiated REKEY is handled internally and the method then
+    /// resumes waiting for the next application-level event.
     pub fn recv_next(&mut self) -> Result<ConnectionEvent> {
-        let frame = match self.pending.pop_front() {
-            Some(frame) => frame,
-            None => self.transport.receive()?,
-        };
-        match frame.message_type {
-            MessageType::Data => {
-                let mut manager = self.manager.lock().expect("manager mutex is not poisoned");
-                Ok(ConnectionEvent::Data(manager.decrypt(&frame)?))
-            }
-            MessageType::Close => {
-                let close = ClosePayload::decode(&frame)?;
-                let mut manager = self.manager.lock().expect("manager mutex is not poisoned");
-                if close.session_id != Some(manager.active_session_id()) {
-                    return Err(Error::InvalidClosePayload);
+        loop {
+            let frame = match self.pending.pop_front() {
+                Some(frame) => frame,
+                None => self.transport.receive()?,
+            };
+
+            match frame.message_type {
+                MessageType::Data => {
+                    let mut manager = self
+                        .manager
+                        .lock()
+                        .expect("manager mutex is not poisoned");
+
+                    return Ok(ConnectionEvent::Data(manager.decrypt(&frame)?));
                 }
-                manager.close();
-                Ok(ConnectionEvent::PeerClosed(close.reason))
+
+                MessageType::Close => {
+                    let close = ClosePayload::decode(&frame)?;
+
+                    let mut manager = self
+                        .manager
+                        .lock()
+                        .expect("manager mutex is not poisoned");
+
+                    let known =
+                        close.session_id == Some(manager.active_session_id())
+                            || close.session_id
+                                == manager
+                                    .draining()
+                                    .map(|draining| draining.session_id());
+
+                    // D-017: ignore CLOSE frames for unknown sessions.
+                    if !known {
+                        continue;
+                    }
+
+                    manager.close();
+
+                    return Ok(ConnectionEvent::PeerClosed(close.reason));
+                }
+
+                MessageType::Rekey => {
+                    self.handle_peer_initiated_rekey(frame)?;
+                    continue;
+                }
+
+                _ => return Err(Error::InvalidHandshake),
             }
-            _ => Err(Error::InvalidHandshake),
         }
+    }
+
+    /// Handles a peer-initiated REKEY whose opening COMMIT was already
+    /// consumed by `recv_next`.
+    fn handle_peer_initiated_rekey(&mut self, seed: Frame) -> Result<()> {
+        let previous_session_id = {
+            let mut manager = self
+                .manager
+                .lock()
+                .expect("manager mutex is not poisoned");
+
+            manager.begin_rekey()?;
+            manager.active_session_id()
+        };
+
+        let mut seeded = SeededTransport::new(seed, &mut self.transport);
+        let mut demux = Demuxer::new(&mut seeded);
+
+        let result = establish_responder(
+            &mut demux,
+            &self.identity,
+            Some(previous_session_id),
+            |_| true,
+        );
+
+        self.pending.extend(demux.take_buffered());
+
+        let candidate = match result {
+            Ok(candidate) => candidate,
+
+            Err(error) => {
+                let mut manager = self
+                    .manager
+                    .lock()
+                    .expect("manager mutex is not poisoned");
+
+                let _ = manager.abort_rekey();
+
+                return Err(error);
+            }
+        };
+
+        if let Err(error) = {
+            let mut manager = self
+                .manager
+                .lock()
+                .expect("manager mutex is not poisoned");
+
+            manager.complete_rekey(
+                candidate,
+                HelloRole::Responder,
+                Instant::now(),
+            )
+        } {
+            let mut manager = self
+                .manager
+                .lock()
+                .expect("manager mutex is not poisoned");
+
+            let _ = manager.abort_rekey();
+
+            return Err(error);
+        }
+
+        Ok(())
     }
 
     pub fn rekey(
@@ -274,37 +510,74 @@ impl TcpConnectionReader {
         sas_approved: impl FnOnce([&'static str; 3]) -> bool,
         now: Instant,
     ) -> Result<()> {
-        let previous_session_id = {
-            let mut manager = self.manager.lock().expect("manager mutex is not poisoned");
+        {
+            let mut manager = self
+                .manager
+                .lock()
+                .expect("manager mutex is not poisoned");
+
             manager.begin_rekey()?;
-            manager.active_session_id()
-        };
-        let local_role = self
-            .manager
-            .lock()
-            .expect("manager mutex is not poisoned")
-            .rekey_role(&self.identity.identity());
-        let mut demux = Demuxer::new(&mut self.transport);
-        let result = match local_role {
-            HelloRole::Initiator => establish_initiator(
-                &mut demux,
-                &self.identity,
-                Some(previous_session_id),
-                sas_approved,
-            ),
-            HelloRole::Responder => establish_responder(
-                &mut demux,
-                &self.identity,
-                Some(previous_session_id),
-                sas_approved,
-            ),
-        };
-        self.pending.extend(demux.take_buffered());
-        let candidate = result?;
-        self.manager
-            .lock()
-            .expect("manager mutex is not poisoned")
-            .complete_rekey(candidate, local_role, now)
+
+            let previous_session_id = manager.active_session_id();
+            let local_role = manager.rekey_role(&self.identity.identity());
+
+            drop(manager);
+
+            let mut demux = Demuxer::new(&mut self.transport);
+
+            let result = match local_role {
+                HelloRole::Initiator => establish_initiator(
+                    &mut demux,
+                    &self.identity,
+                    Some(previous_session_id),
+                    sas_approved,
+                ),
+
+                HelloRole::Responder => establish_responder(
+                    &mut demux,
+                    &self.identity,
+                    Some(previous_session_id),
+                    sas_approved,
+                ),
+            };
+
+            self.pending.extend(demux.take_buffered());
+
+            let candidate = match result {
+                Ok(candidate) => candidate,
+
+                Err(error) => {
+                    let mut manager = self
+                        .manager
+                        .lock()
+                        .expect("manager mutex is not poisoned");
+
+                    let _ = manager.abort_rekey();
+
+                    return Err(error);
+                }
+            };
+
+            if let Err(error) = {
+                let mut manager = self
+                    .manager
+                    .lock()
+                    .expect("manager mutex is not poisoned");
+
+                manager.complete_rekey(candidate, local_role, now)
+            } {
+                let mut manager = self
+                    .manager
+                    .lock()
+                    .expect("manager mutex is not poisoned");
+
+                let _ = manager.abort_rekey();
+
+                return Err(error);
+            }
+        }
+
+        Ok(())
     }
 
     pub fn expire_drain(&mut self, now: Instant) {
@@ -329,6 +602,7 @@ impl TcpConnectionWriter {
             .lock()
             .expect("manager mutex is not poisoned")
             .encrypt(content)?;
+
         self.write_frame(&frame)
     }
 
@@ -338,13 +612,16 @@ impl TcpConnectionWriter {
             .lock()
             .expect("manager mutex is not poisoned")
             .active_session_id();
+
         let frame = ClosePayload {
             session_id: Some(session_id),
             reason,
             detail: None,
         }
         .encode()?;
+
         self.write_frame(&frame)?;
+
         self.manager
             .lock()
             .expect("manager mutex is not poisoned")
@@ -352,16 +629,24 @@ impl TcpConnectionWriter {
         if let Ok(write) = self.write.lock() {
             let _ = write.shutdown(std::net::Shutdown::Both);
         }
+
         Ok(())
     }
 
     fn write_frame(&self, frame: &Frame) -> Result<()> {
         use std::io::Write;
+
         let bytes = frame.encode()?;
-        let mut write = self.write.lock().expect("write mutex is not poisoned");
+
+        let mut write = self
+            .write
+            .lock()
+            .expect("write mutex is not poisoned");
+
         write
             .write_all(&bytes)
             .map_err(|error| Error::Transport(error.to_string()))?;
+
         write
             .flush()
             .map_err(|error| Error::Transport(error.to_string()))

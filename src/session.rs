@@ -65,6 +65,17 @@ impl SessionLifecycle {
         Ok(())
     }
 
+    /// Reverts a REKEYING session to ACTIVE after its candidate handshake
+    /// failed or timed out (D-015 / §8.4).
+    pub fn abort_rekey(&mut self) -> Result<()> {
+        if self.state != SessionState::Rekeying {
+            return Err(Error::InvalidStateTransition);
+        }
+
+        self.state = SessionState::Active;
+        Ok(())
+    }
+
     /// Makes a superseded session receive-only for the bounded drain window.
     pub fn begin_draining(&mut self, now: Instant) -> Result<()> {
         if self.state != SessionState::Active && self.state != SessionState::Rekeying {

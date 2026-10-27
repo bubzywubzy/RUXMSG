@@ -14,10 +14,49 @@ use crate::wire::Frame;
 pub trait Transport {
     /// Sends one complete protocol frame.
     fn send(&mut self, frame: &Frame) -> Result<()>;
+
     /// Receives one complete protocol frame, blocking as appropriate for the transport.
     fn receive(&mut self) -> Result<Frame>;
+
     /// Closes the transport and releases its I/O resources.
     fn close(&mut self) -> Result<()>;
+}
+
+/// Wraps a transport with one already-read frame that must be returned before
+/// further reads reach the inner transport.
+///
+/// This is used when the ordinary receive loop has already consumed a peer's
+/// opening REKEY/COMMIT frame. The frame must not be discarded: the responder
+/// handshake expects to receive that COMMIT itself.
+pub struct SeededTransport<'a, T: Transport> {
+    inner: &'a mut T,
+    seed: Option<Frame>,
+}
+
+impl<'a, T: Transport> SeededTransport<'a, T> {
+    pub fn new(seed: Frame, inner: &'a mut T) -> Self {
+        Self {
+            inner,
+            seed: Some(seed),
+        }
+    }
+}
+
+impl<T: Transport> Transport for SeededTransport<'_, T> {
+    fn send(&mut self, frame: &Frame) -> Result<()> {
+        self.inner.send(frame)
+    }
+
+    fn receive(&mut self) -> Result<Frame> {
+        self.seed
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| self.inner.receive())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.inner.close()
+    }
 }
 
 /// Wraps a live `Transport` during a handshake/rekey exchange so that DATA and
@@ -52,10 +91,15 @@ impl<T: Transport> Transport for Demuxer<'_, T> {
     fn receive(&mut self) -> Result<Frame> {
         loop {
             let frame = self.inner.receive()?;
-            if matches!(frame.message_type, MessageType::Data | MessageType::Close) {
+
+            if matches!(
+                frame.message_type,
+                MessageType::Data | MessageType::Close
+            ) {
                 self.buffered.push_back(frame);
                 continue;
             }
+
             return Ok(frame);
         }
     }
@@ -76,6 +120,7 @@ impl InMemoryTransport {
     pub fn pair() -> (Self, Self) {
         let (a_tx, a_rx) = mpsc::channel();
         let (b_tx, b_rx) = mpsc::channel();
+
         (
             Self {
                 incoming: a_rx,
@@ -96,6 +141,7 @@ impl Transport for InMemoryTransport {
         if self.closed {
             return Err(Error::TransportClosed);
         }
+
         self.outgoing
             .send(frame.encode()?)
             .map_err(|_| Error::TransportClosed)
@@ -105,11 +151,18 @@ impl Transport for InMemoryTransport {
         if self.closed {
             return Err(Error::TransportClosed);
         }
-        let bytes = self.incoming.recv().map_err(|_| Error::TransportClosed)?;
+
+        let bytes = self
+            .incoming
+            .recv()
+            .map_err(|_| Error::TransportClosed)?;
+
         let (frame, consumed) = Frame::decode(&bytes)?;
+
         if consumed != bytes.len() {
             return Err(Error::TrailingFrameBytes);
         }
+
         Ok(frame)
     }
 
@@ -145,7 +198,9 @@ impl<S: Read + Write> Transport for FramedTransport<S> {
         if self.closed {
             return Err(Error::TransportClosed);
         }
+
         let bytes = frame.encode()?;
+
         self.stream.write_all(&bytes).map_err(io_error)?;
         self.stream.flush().map_err(io_error)
     }
@@ -154,19 +209,31 @@ impl<S: Read + Write> Transport for FramedTransport<S> {
         if self.closed {
             return Err(Error::TransportClosed);
         }
+
         let mut header = [0; 6];
+
         self.stream.read_exact(&mut header).map_err(io_error)?;
-        let length = u32::from_be_bytes(header[2..6].try_into().expect("header has four bytes"));
+
+        let length =
+            u32::from_be_bytes(header[2..6].try_into().expect("header has four bytes"));
+
         crate::protocol::FrameLength::new(length)?;
+
         let mut bytes = Vec::with_capacity(6 + length as usize);
         bytes.extend_from_slice(&header);
+
         let mut payload = vec![0; length as usize];
+
         self.stream.read_exact(&mut payload).map_err(io_error)?;
+
         bytes.extend_from_slice(&payload);
+
         let (frame, consumed) = Frame::decode(&bytes)?;
+
         if consumed != bytes.len() {
             return Err(Error::TrailingFrameBytes);
         }
+
         Ok(frame)
     }
 
@@ -188,8 +255,26 @@ mod tests {
     #[test]
     fn in_memory_pair_transfers_framed_messages() {
         let (mut left, mut right) = InMemoryTransport::pair();
+
         let frame = Frame::new(MessageType::Close, vec![0xa0]).unwrap();
+
         left.send(&frame).unwrap();
+
         assert_eq!(right.receive().unwrap(), frame);
+    }
+
+    #[test]
+    fn seeded_transport_returns_seed_before_inner_transport() {
+        let (mut left, mut right) = InMemoryTransport::pair();
+
+        let seed = Frame::new(MessageType::Rekey, vec![0xa0]).unwrap();
+        let later = Frame::new(MessageType::Close, vec![0xa0]).unwrap();
+
+        left.send(&later).unwrap();
+
+        let mut seeded = SeededTransport::new(seed.clone(), &mut right);
+
+        assert_eq!(seeded.receive().unwrap(), seed);
+        assert_eq!(seeded.receive().unwrap(), later);
     }
 }

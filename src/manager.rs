@@ -141,6 +141,11 @@ impl SessionManager {
         self.active.lifecycle.begin_rekey()
     }
 
+    ///Returns the active session to ACTIVE after a failed or timed-out rekey.
+    pub fn abort_rekey(&mut self) -> Result<()> {
+        self.active.lifecycle.abort_rekey()
+    }
+    
     /// Promotes a completed rekey candidate to active and drains the old session.
     pub fn complete_rekey(
         &mut self,
@@ -150,6 +155,9 @@ impl SessionManager {
     ) -> Result<()> {
         if candidate.keys.session_id == self.active.session_id() {
             return Err(Error::InvalidStateTransition);
+        }
+        if candidate.peer_identity != self.active.peer_identity() {
+            return Err(Error::IdentityMismatch);
         }
         let mut new_active = ManagedSession::new(candidate, local_role);
         new_active.lifecycle.activate(now)?;
@@ -250,6 +258,30 @@ mod tests {
         assert!(manager.draining().is_some());
 
         manager.expire_drain(now + Duration::from_secs(16));
+        assert!(manager.draining().is_none());
+    }
+
+    #[test]
+    fn complete_rekey_rejects_a_candidate_with_a_different_peer_identity() {
+        let now = Instant::now();
+
+        let initial = established(1, [9; 32]);
+        let mut manager =
+            SessionManager::from_initial_handshake(initial, HelloRole::Initiator, now).unwrap();
+
+        manager.begin_rekey().unwrap();
+
+        let candidate = established(2, [10; 32]);
+
+        assert_eq!(
+            manager.complete_rekey(candidate, HelloRole::Initiator, now),
+            Err(Error::IdentityMismatch)
+        );
+
+        assert_eq!(
+            manager.active().peer_identity(),
+            PeerIdentity::from_bytes([9; 32])
+        );
         assert!(manager.draining().is_none());
     }
 
