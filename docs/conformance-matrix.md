@@ -1,291 +1,113 @@
 # RUXMSG/1 conformance matrix
 
-This matrix connects the normative requirements of RUXMSG/1 to the current implementation and repository test coverage.
-
-It is a **status and evidence document**, not a second protocol specification. When wording differs between this document and the [protocol specification](protocol-spec.md), the protocol specification is authoritative.
-
-## Status meanings
-
-* **Implemented and tested** — implementation exists and repository tests exercise the relevant behavior.
-* **Implemented, integration incomplete** — implementation primitives exist, but the complete workflow or product integration is incomplete.
-* **Infrastructure only** — supporting infrastructure exists, but the repository does not establish a complete conformance result.
-* **Planned** — not currently implemented or not currently sufficient for an interoperability claim.
-
----
-
-## Protocol conformance
-
-| Area                                     | Implementation                                       | Evidence                                     | Status                     |
-| ---------------------------------------- | ---------------------------------------------------- | -------------------------------------------- | -------------------------- |
-| Version, message types, and frame limits | `src/protocol.rs`, `src/wire.rs`                     | `tests/transport.rs`, module tests           | **Implemented and tested** |
-| Outer framing and truncation handling    | `src/wire.rs`, `src/transport.rs`                    | `tests/transport.rs`                         | **Implemented and tested** |
-| Deterministic transcript encoding        | `src/encoding.rs`, `src/handshake.rs`                | `tests/conformance.rs`, `tests/handshake.rs` | **Implemented and tested** |
-| Ed25519 identity authentication          | `src/crypto.rs`, `src/handshake.rs`                  | `tests/handshake.rs`, crypto tests           | **Implemented and tested** |
-| X25519 ephemeral key agreement           | `src/crypto.rs`                                      | crypto and handshake tests                   | **Implemented and tested** |
-| X25519 all-zero shared-secret rejection  | `src/crypto.rs`                                      | crypto and handshake tests                   | **Implemented and tested** |
-| SAS derivation                           | `src/crypto.rs`                                      | `tests/conformance.rs`                       | **Implemented and tested** |
-| HKDF-SHA-256 session derivation          | `src/crypto.rs`                                      | `tests/handshake.rs`, crypto tests           | **Implemented and tested** |
-| Directional key derivation               | `src/crypto.rs`                                      | `tests/handshake.rs`, crypto tests           | **Implemented and tested** |
-| Session confirmation                     | `src/crypto.rs`, `src/handshake.rs`, `src/engine.rs` | `tests/handshake.rs`                         | **Implemented and tested** |
-| Authenticated DATA                       | `src/data.rs`, `src/crypto.rs`                       | DATA and conformance tests                   | **Implemented and tested** |
-| Canonical DATA padding                   | `src/data.rs`                                        | DATA and conformance tests                   | **Implemented and tested** |
-| Replay protection                        | `src/ratchet.rs`, `src/data.rs`                      | ratchet/DATA tests                           | **Implemented and tested** |
-| Bounded out-of-order delivery            | `src/ratchet.rs`, `src/data.rs`                      | ratchet/DATA tests                           | **Implemented and tested** |
-| Skipped-key limits                       | `src/ratchet.rs`                                     | ratchet/DATA tests                           | **Implemented and tested** |
-| Session lifecycle                        | `src/session.rs`, `src/manager.rs`                   | `tests/rekey.rs`, `tests/restart.rs`         | **Implemented and tested** |
-| Rekey candidate handling                 | `src/connection.rs`, `src/manager.rs`                | `tests/connection.rs`, `tests/rekey.rs`      | **Implemented and tested** |
-| Rekey drain behavior                     | `src/connection.rs`, `src/manager.rs`                | `tests/rekey.rs`                             | **Implemented and tested** |
-| In-memory transport                      | `src/transport.rs`                                   | handshake and integration tests              | **Implemented and tested** |
-| Framed stream transport                  | `src/transport.rs`                                   | `tests/transport.rs`, `tests/tcp_split.rs`   | **Implemented and tested** |
-| TCP stream splitting                     | `src/connection.rs`                                  | `tests/tcp_split.rs`                         | **Implemented and tested** |
-
----
-
-## Identity and persistence
-
-The current persistence boundary is intentionally smaller than the earlier planned trust-store design.
-
-| Area                                 | Implementation                      | Evidence                     | Status                                  |
-| ------------------------------------ | ----------------------------------- | ---------------------------- | --------------------------------------- |
-| Persistent local Ed25519 identity    | `src/identity.rs`, `src/storage.rs` | restart/integration coverage | **Implemented and tested**              |
-| OS credential-store integration      | `src/storage.rs`                    | storage/integration behavior | **Implemented, integration incomplete** |
-| Persistent trusted-peer records      | —                                   | none                         | **Planned**                             |
-| Persistent SAS approvals             | —                                   | none                         | **Planned**                             |
-| Automatic trusted-peer SAS bypass    | —                                   | none                         | **Planned**                             |
-| Persistent session state             | —                                   | none                         | **Not implemented by design**           |
-| Persistent ratchet/message-key state | —                                   | none                         | **Not implemented by design**           |
-| Persistent message history           | —                                   | none                         | **Planned**                             |
-
-The current implementation persists the local identity required to maintain a stable cryptographic identity across process restarts.
-
-It does **not** persist trusted-peer records or SAS approvals.
-
-A successful SAS verification therefore applies to the connection being established. The current CLI does not automatically remember that verification for a future connection.
-
----
-
-## Session restart behavior
-
-| Area                                      | Implementation                      | Evidence                                   | Status                        |
-| ----------------------------------------- | ----------------------------------- | ------------------------------------------ | ----------------------------- |
-| Identity survives process restart         | `src/identity.rs`, `src/storage.rs` | `tests/restart.rs`                         | **Implemented and tested**    |
-| Active session remains in memory only     | `src/session.rs`, `src/manager.rs`  | `tests/restart.rs`                         | **Implemented and tested**    |
-| Fresh handshake after restart             | `src/engine.rs`, `src/session.rs`   | `tests/restart.rs`, `tests/conformance.rs` | **Implemented and tested**    |
-| Session keys restored after restart       | —                                   | none                                       | **Not implemented by design** |
-| Ratchet state restored after restart      | —                                   | none                                       | **Not implemented by design** |
-| Trusted-peer state restored after restart | —                                   | none                                       | **Planned**                   |
-
-Restarting the process therefore preserves the local identity but requires a new cryptographic session.
-
----
-
-## CLI conformance
-
-The CLI has evolved into a multi-session REPL. The matrix therefore distinguishes the currently implemented client functionality from future application features.
-
-| Area                                | Implementation      | Evidence                        | Status                     |
-| ----------------------------------- | ------------------- | ------------------------------- | -------------------------- |
-| Profile selection                   | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented**            |
-| Profile initialization              | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented**            |
-| Profile listing                     | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented**            |
-| TCP listener                        | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented and tested** |
-| TCP outbound connection             | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented and tested** |
-| Multiple simultaneous peer sessions | `src/bin/ruxmsg.rs` | current peer/session management | **Implemented**            |
-| Peer listing                        | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented**            |
-| Peer selection                      | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented**            |
-| Targeted message sending            | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented**            |
-| Peer/session inspection             | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented**            |
-| Peer fingerprint display            | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented**            |
-| Explicit session close              | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented**            |
-| Tailscale convenience commands      | `src/bin/ruxmsg.rs` | CLI implementation              | **Implemented**            |
-| Persistent trusted-peer enrollment  | —                   | none                            | **Planned**                |
-| Automatic SAS bypass                | —                   | none                            | **Planned**                |
-| Persistent conversation history     | —                   | none                            | **Planned**                |
-| Offline messaging                   | —                   | none                            | **Planned**                |
-| Complete production messaging UI    | —                   | none                            | **Planned**                |
+This matrix connects normative requirements to implementation and tests. It is a status document, not a second specification. The [protocol specification](protocol-spec.md) (1.1 draft) controls where wording differs.
+
+Status meanings:
+
+- **Implemented and tested**: code exists and repository tests exercise it.
+- **Implemented, gap**: code exists but does not fully meet spec 1.1; the gap is stated.
+- **Planned**: required by spec 1.1, not yet implemented.
+- **Infrastructure only**: targets or abstractions exist without a recorded validation result.
+- **Unverified**: cannot be confirmed from the repository alone.
+- **External**: needs work outside this repository.
+
+## Wire and encoding
+
+| Area | Implementation | Evidence | Status |
+| --- | --- | --- | --- |
+| Version, message registry, 1 MiB limit | `src/protocol.rs`, `src/wire.rs` | `tests/conformance.rs`, `tests/transport.rs` | Implemented and tested |
+| Per-type payload limits (spec §4.3) | none | none | Planned |
+| Outer framing, truncation | `src/wire.rs`, `src/transport.rs` | `tests/transport.rs`, `tests/conformance.rs` | Implemented and tested |
+| Strict deterministic CBOR (duplicate, unknown, unsorted, trailing) | `src/wire.rs` | `tests/conformance.rs` | Implemented and tested |
+| `cipher_suite` must equal 1 in HELLO and AUTH | `src/handshake.rs` | none | Implemented, gap: value is not checked |
+| Reserved message types rejected | `src/protocol.rs` | `tests/conformance.rs` | Implemented and tested |
+
+## Handshake and authentication
+
+| Area | Implementation | Evidence | Status |
+| --- | --- | --- | --- |
+| COMMIT before HELLO (D-012) | none | none | Planned |
+| Symmetric HELLO and transcript from both HELLOs | `src/handshake.rs`, `src/encoding.rs` | `tests/conformance.rs`, `tests/handshake.rs` | Implemented and tested |
+| AUTH fields checked against locally built transcript | `src/engine.rs`, `src/handshake.rs` | none | Implemented, gap: AUTH contents are hashed, not compared |
+| Ed25519 identity signatures | `src/crypto.rs`, `src/handshake.rs` | `tests/conformance.rs`, crypto tests | Implemented and tested |
+| Strict Ed25519 verification | `src/crypto.rs` | none | Implemented, gap: non-strict `verify` |
+| X25519 agreement, all-zero rejection | `src/crypto.rs` | `tests/conformance.rs` | Implemented and tested |
+| SAS derivation and bit boundaries | `src/crypto.rs` | `tests/conformance.rs` | Implemented and tested |
+| SAS dictionary hash | `bip39` crate | `tests/conformance.rs` | Implemented and tested |
+| SAS required on every initial handshake | `src/engine.rs` | `tests/conformance.rs` | Implemented and tested |
+| Typed SAS approval (`yes` + Enter), fingerprint display, timeout | `src/bin/ruxmsg.rs` | none | Planned (single keypress today) |
+| HKDF key schedule, session ID, confirmation | `src/crypto.rs`, `src/handshake.rs`, `src/engine.rs` | `tests/handshake.rs`, `tests/conformance.rs` | Implemented and tested |
+
+## Messages
+
+| Area | Implementation | Evidence | Status |
+| --- | --- | --- | --- |
+| DATA schema, AAD, nonce | `src/data.rs`, `src/crypto.rs` | `tests/conformance.rs` | Implemented and tested |
+| Padding measured on ciphertext (D-014) | `src/data.rs` | `tests/conformance.rs` | Implemented and tested |
+| Max content size (`MAX_CONTENT`, D-016) | none | none | Planned |
+| Prepare/authenticate/commit receive path | `src/data.rs`, `src/ratchet.rs` | `tests/conformance.rs`, data tests | Implemented and tested |
+| Replay window, skipped keys, key-cache bound | `src/ratchet.rs` | `tests/conformance.rs` | Implemented and tested (real ceiling is 128 keys, per spec §7.7) |
+| Directional separation | `src/manager.rs`, `src/data.rs` | `tests/conformance.rs` | Implemented and tested |
+
+## Sessions and rekey
+
+| Area | Implementation | Evidence | Status |
+| --- | --- | --- | --- |
+| Lifecycle states and DATA permissions | `src/session.rs` | `tests/conformance.rs` | Implemented and tested |
+| Session bound to one connection (D-013) | `src/bin/ruxmsg.rs` | none | Implemented, gap: behavior exists in the client but no test asserts it |
+| Rekey candidate promotion and drain | `src/manager.rs`, `src/connection.rs` | `tests/rekey.rs`, `tests/connection.rs` | Implemented and tested |
+| Rekey without SAS, identity continuity (D-015) | `src/connection.rs`, `src/manager.rs` | none | Planned (rekey currently prompts SAS and does not compare identities) |
+| Failed rekey returns session to ACTIVE | `src/manager.rs` | none | Planned (session stays in REKEYING) |
+| Peer-initiated rekey handled by reader loop | `src/connection.rs` | none | Planned |
+| Automatic rekey trigger (24 h / 1,000,000) | `src/session.rs` | none | Implemented, gap: `rekey_due` is never called |
+| Rekey glare tie-break on collision | `src/handshake.rs` | `tests/conformance.rs` | Implemented, gap: role fixed by key today, not resolved on collision |
+| DATA buffered during rekey handshake | `src/transport.rs` | `tests/connection.rs` | Implemented and tested |
+
+## Control frames and limits
+
+| Area | Implementation | Evidence | Status |
+| --- | --- | --- | --- |
+| CLOSE schema and reasons | `src/close.rs` | `tests/conformance.rs` | Implemented and tested |
+| CLOSE session-ID matching, unauthenticated labeling (D-017) | `src/connection.rs`, `src/bin/ruxmsg.rs` | none | Planned |
+| Handshake timeouts, unauthenticated-handshake cap (D-016) | none | none | Planned |
+
+## Volatile state and key hygiene
+
+| Area | Implementation | Evidence | Status |
+| --- | --- | --- | --- |
+| Identity seed only persisted | `src/storage.rs` | storage tests (fake store) | Implemented and tested |
+| Real OS credential store persists across restarts | `Cargo.toml`, `src/storage.rs` | none | Unverified: `keyring` features and backend not confirmed |
+| No trust store, address book, history | whole crate | code review | Implemented |
+| Fresh session after restart | `src/session.rs` | `tests/restart.rs` | Implemented and tested |
+| Initial chain keys and root key not retained | `src/manager.rs` | none | Implemented, gap: `SessionKeys` kept in `ManagedSession` |
+| Chain, message and cached keys zeroized | `src/data.rs`, `src/ratchet.rs` | none | Implemented, gap: not zeroized on drop |
+| Terminal display sanitization of peer text | `src/bin/ruxmsg.rs` | none | Planned |
+
+## Transport and client
+
+| Area | Implementation | Evidence | Status |
+| --- | --- | --- | --- |
+| In-memory and framed transports | `src/transport.rs` | `tests/transport.rs` | Implemented and tested |
+| Split TCP reader/writer | `src/connection.rs` | `tests/tcp_split.rs` | Implemented and tested |
+| Multi-session REPL and chat view | `src/bin/ruxmsg.rs` | manual | Implemented (no automated tests) |
+| Loopback/tailnet default bind | `src/bin/ruxmsg.rs` | none | Planned |
+| Tailscale helper commands | `src/bin/ruxmsg.rs` | manual | Implemented (no automated tests) |
+
+## Evidence quality
+
+| Area | Status |
+| --- | --- |
+| Hex known-answer vectors (spec §12.1) | Planned: current tests assert properties, not fixed hex values |
+| Fuzz targets (close, DATA decrypt, CBOR, frame, handshake, lifecycle) | Infrastructure only: `fuzz/corpus/` is git-ignored, so no corpus or run results are recorded |
+| Independent implementation interoperability | External |
+| Independent security review | External |
 
-The current CLI should therefore not be described as a one-connection client. A single process can maintain multiple active peer sessions.
+## Test evidence notes
 
-The CLI is nevertheless still a small protocol-oriented terminal client rather than a complete production messaging application.
+`tests/conformance.rs` is important for SAS bit boundaries, transcript determinism, nonce byte order, padding and replay behavior, but most of it checks properties rather than published hex values. Handshake tests use two peers and check both derive the same transcript and session ID. Rekey tests check that an old session becomes receive-only during drain and that the new session becomes active.
 
----
-
-## Transport and networking
-
-| Area                               | Implementation                           | Evidence                        | Status                                  |
-| ---------------------------------- | ---------------------------------------- | ------------------------------- | --------------------------------------- |
-| Generic `Transport` abstraction    | `src/transport.rs`                       | transport/integration tests     | **Implemented and tested**              |
-| In-memory transport                | `src/transport.rs`                       | handshake/integration tests     | **Implemented and tested**              |
-| Generic framed stream transport    | `src/transport.rs`                       | `tests/transport.rs`            | **Implemented and tested**              |
-| TCP client/listener path           | `src/bin/ruxmsg.rs`, `src/connection.rs` | connection/TCP tests            | **Implemented and tested**              |
-| Tailscale reachability integration | `src/bin/ruxmsg.rs`                      | CLI implementation              | **Implemented, integration incomplete** |
-| Additional production transports   | `src/transport.rs` abstraction           | no additional shipped transport | **Planned**                             |
-| Central relay/server               | —                                        | none                            | **Not part of current architecture**    |
-
-Tailscale is an optional reachability mechanism. It is not used as the cryptographic identity or authentication authority for a RUXMSG peer.
-
----
-
-## Testing and verification infrastructure
-
-| Area                                        | Implementation             | Evidence                               | Status                     |
-| ------------------------------------------- | -------------------------- | -------------------------------------- | -------------------------- |
-| Deterministic protocol vectors              | `tests/conformance.rs`     | committed test vectors                 | **Implemented and tested** |
-| Handshake integration testing               | `tests/handshake.rs`       | two-peer handshake tests               | **Implemented and tested** |
-| Connection integration testing              | `tests/connection.rs`      | connection tests                       | **Implemented and tested** |
-| Rekey testing                               | `tests/rekey.rs`           | rekey/drain tests                      | **Implemented and tested** |
-| Restart testing                             | `tests/restart.rs`         | restart behavior tests                 | **Implemented and tested** |
-| TCP stream-splitting tests                  | `tests/tcp_split.rs`       | TCP split tests                        | **Implemented and tested** |
-| Transport tests                             | `tests/transport.rs`       | transport/framing tests                | **Implemented and tested** |
-| Fuzzing targets                             | `fuzz/fuzz_targets/`       | committed targets/corpus               | **Infrastructure only**    |
-| Independent interoperability implementation | external                   | no independent implementation recorded | **Planned**                |
-| Independent security audit                  | external                   | no independent review recorded         | **Planned**                |
-| Cross-platform CI matrix                    | `.github/workflows/ci.yml` | current Linux CI                       | **Infrastructure only**    |
-
-The repository's test suite provides evidence for implementation behavior, but passing repository tests is not equivalent to independent interoperability validation or a security audit.
-
----
-
-## Conformance vectors
-
-The deterministic conformance tests are particularly important for protocol behavior that must remain byte-for-byte compatible between implementations.
-
-Relevant coverage includes:
-
-* transcript construction;
-* transcript domain separation;
-* SAS derivation and bit boundaries;
-* nonce construction and byte ordering;
-* canonical encoding;
-* DATA authentication;
-* padding behavior;
-* protocol rejection rules.
-
-These tests are intended to prevent accidental changes to protocol behavior during implementation changes.
-
-A passing local test suite does not by itself demonstrate interoperability with an independent implementation.
-
----
-
-## Rekey evidence
-
-The rekey tests exercise the transition between an active session and its predecessor.
-
-The expected lifecycle is:
-
-```text
-Current session
-      │
-      │ rekey
-      ▼
-New active session
-      │
-      │
-      └──── old session becomes draining
-                         │
-                         ▼
-                  drain interval
-                         │
-                         ▼
-                    old session
-                      expires
-```
-
-The tests verify the relevant session transition and ensure that the old session does not remain an unrestricted source of new DATA after the transition.
-
----
-
-## Fuzzing evidence
-
-The repository contains fuzzing targets for protocol and parsing boundaries.
-
-Fuzz infrastructure establishes that a target can be exercised by a fuzzing engine. It does **not** establish:
-
-* a particular number of executed cases;
-* a specific coverage percentage;
-* absence of vulnerabilities;
-* absence of crashes outside the tested corpus;
-* production security.
-
-Fuzzing status should therefore remain separate from protocol conformance status.
-
----
-
-## Interoperability status
-
-RUXMSG currently has repository-local implementation and conformance tests, but no independent implementation is recorded as interoperating with the current protocol.
-
-Accordingly, the project should not claim interoperability solely from:
-
-```text
-implementation ↔ implementation
-```
-
-tests within the same repository.
-
-An interoperability claim requires at least one independently implemented protocol participant and evidence that the implementation follows the normative wire and cryptographic requirements.
-
----
-
-## Security-review status
-
-No independent cryptographic or security audit is currently recorded for the repository.
-
-The implementation contains explicit security boundaries and extensive deterministic testing, but those facts do not substitute for independent review.
-
-A future production-readiness assessment should consider at least:
-
-* independent protocol review;
-* cryptographic implementation review;
-* parser and wire-format review;
-* state-machine review;
-* concurrency review;
-* memory-safety review;
-* interoperability testing;
-* platform-specific credential-store review;
-* adversarial testing of malformed and reordered input.
-
----
-
-## Current overall status
-
-The repository currently has a substantial protocol implementation and test foundation.
-
-The implementation status can be summarized as:
-
-```text
-Protocol primitives          Implemented
-Handshake                    Implemented
-Session establishment        Implemented
-Authenticated DATA           Implemented
-Ratchet/replay handling      Implemented
-Rekey/drain machinery        Implemented
-Transport abstraction        Implemented
-TCP client                   Implemented
-Multi-session REPL           Implemented
-Local identity persistence   Implemented
-Trusted-peer persistence     Not implemented
-Persistent conversations     Not implemented
-Independent interoperability Not demonstrated
-Independent security review  Not performed
-```
-
-This is a description of implementation state, not a production-readiness rating.
-
----
+Blocking two-peer tests must start the peer thread before the blocking handshake on the main thread.
 
 ## Review rule
 
-Conformance status and production readiness are separate questions.
-
-A protocol feature may be implemented and tested without the overall product being suitable for production use.
-
-Before making a production-security or interoperability claim, the relevant behavior should have:
-
-1. complete repository-level integration coverage;
-2. deterministic conformance evidence where applicable;
-3. independent interoperability evidence where applicable;
-4. appropriate adversarial testing;
-5. independent security review.
-
-The current repository does not make a general production-readiness claim.
+A row is promoted to production-ready only after full integration coverage, interoperability evidence where applicable, and independent security review. The repository makes no general production-readiness claim.

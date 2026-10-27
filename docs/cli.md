@@ -1,588 +1,118 @@
 # RUXMSG command-line client
 
-The `ruxmsg` binary is the terminal client for RUXMSG.
+`ruxmsg` is an interactive terminal client for volatile peer-to-peer messaging. It has two frontends that share one set of live sessions: a line-oriented **REPL** for control, and a **chat view** (Ratatui) for conversation. Press Esc in the chat view to return to the REPL; the network session stays alive.
 
-It provides a line-oriented REPL for managing local identity profiles, starting a TCP listener, establishing multiple peer connections, inspecting sessions, and exchanging encrypted messages.
+Nothing about your peers, sessions, or messages is saved. The only persistent item is your identity seed.
 
-The client is intentionally small. It exercises the RUXMSG protocol and session machinery directly rather than providing a full-featured messaging application.
-
----
-
-## Build and run
-
-Build the project with Cargo:
-
-```bash
-cargo build
-```
-
-Run the client:
-
-```bash
-cargo run --bin ruxmsg
-```
-
-After building, the binary can also be invoked directly:
+## Launching
 
 ```text
-ruxmsg
+ruxmsg                      # start with no identity loaded
+ruxmsg --profile alice      # load an existing profile at startup
 ```
 
-A profile can be selected when starting the client:
+If `--profile` names a profile that does not exist, the client says so; create it with `profile init alice`.
+
+## Profiles and identity
+
+A profile is one Ed25519 identity. Its 32-byte seed is stored in the operating-system credential store under the service `ruxmsg-<profile>`, account `identity`. There is no trust file, address book, or profile registry.
+
+| Command | Effect |
+| --- | --- |
+| `profile init <name>` | Create a new identity and make it active. Fails if the profile exists. |
+| `profile use <name>` | Load an existing identity. |
+| `profile list` | Not supported: RUXMSG keeps no registry of profiles. Remember your profile names. |
+| `fingerprint` | Show your own fingerprint (64 hex characters, the raw public key). |
+| `fingerprint <label>` | Show a connected peer's fingerprint. |
+
+Profile names are 1 to 64 characters: ASCII letters, digits, `-`, `_`.
+
+The identity is stable: the same profile gives the same fingerprint every launch. Losing the credential-store entry loses the identity; there is no recovery.
+
+**Credential-store requirements.** macOS uses Keychain, Windows uses Credential Manager, Linux uses Secret Service (a running provider such as GNOME Keyring or KWallet is required). If startup or `profile init` fails with a storage error, check that the store is available to your session. Verify that an identity actually survives a restart on your platform; see [Troubleshooting](#troubleshooting).
+
+## Commands
 
 ```text
-ruxmsg --profile alice
+IDENTITY
+  profile init|use|list     manage identity profiles
+  fingerprint [label]       show own or peer fingerprint
+
+NETWORK
+  start [--addr <addr>]     accept connections (default 0.0.0.0:4443)
+  stop                      stop accepting new connections
+  connect <addr>            connect to a peer
+
+SESSIONS
+  peers                     list sessions (label, direction, remote, status)
+  use <label>               set the default target
+  session <label>           show session details
+  close <label>             close a session
+
+MESSAGING
+  chat [label]              open the chat view
+  msg <label> <text>        send a message
+  <text>                    send to the default target (any unrecognised input)
+
+TAILSCALE
+  tailscale status|up|ip    inspect or start the local Tailscale client
+
+GENERAL
+  help, quit
 ```
 
-The profile name determines which persistent local identity is used by that process.
+Each connection gets a label (`peer1`, `peer2`, ...). You can hold several connections at once; each is an independent two-party session.
 
----
+Any input that is not a recognised command is sent as a message to the default target, so a mistyped command can be sent to your peer. Use `msg <label> <text>` when in doubt.
 
-## Starting the client
+## First connection and the SAS
 
-With no arguments, `ruxmsg` starts its interactive REPL.
+Every connection, first or hundredth, requires SAS approval from both people. RUXMSG remembers no one.
 
-```text
-$ ruxmsg
+1. Both peers see: `SECURITY VERIFICATION` followed by three words.
+2. Compare the words over an **independent** channel. Do not use the RUXMSG connection, and do not treat a matching IP address, hostname, or Tailscale name as verification.
+3. If the words match exactly, approve. If not, reject and investigate.
+4. Also check the peer's fingerprint against one you already know, if you have one.
 
-RUXMSG
->
-```
+A rejection, timeout, or mismatch aborts the connection and destroys all candidate state.
 
-The available commands can be displayed with:
+> **Planned (spec 1.1):** approval will require typing `yes` and Enter, will show the peer fingerprint alongside the words, and will time out. Currently a single `y` keypress approves and any other key rejects, so avoid typing while a connection request is pending.
 
-```text
-help
-```
+## Chat view
 
-The client currently supports:
+`chat` (or `chat <label>`) opens the chat view for a connected session. Enter sends, Up/Down/PageUp/PageDown scroll, Esc returns to the REPL. Incoming messages for other sessions are not shown in the chat view. A SAS request for the chat's own session is displayed there but must be approved from the REPL.
 
-```text
-profile init <name>
-profile use <name>
-profile list
+## Sessions are tied to connections
 
-start [--addr <addr>]
-stop
-connect <addr>
+A session lives exactly as long as its TCP connection. If the connection drops, the session is gone and its keys are destroyed. Reconnecting means a new handshake and a new SAS. Closing the program destroys all sessions.
 
-peers
-use <label>
-msg <label> <text>
-close <label>
-
-fingerprint [label]
-session <label>
-
-tailscale status
-tailscale up
-tailscale ip
-
-help
-quit
-```
-
-The exact prompt and informational output may change as the terminal client develops.
-
----
-
-## Profiles
-
-Profiles provide separate local identity contexts.
-
-Create a profile with:
-
-```text
-profile init alice
-```
-
-Create another:
-
-```text
-profile init bob
-```
-
-List available profiles:
-
-```text
-profile list
-```
-
-Switch the active profile:
-
-```text
-profile use alice
-```
-
-A profile's local Ed25519 identity is persisted through the operating-system credential-store abstraction.
-
-The identity is generated when the profile first needs one and remains stable across application restarts.
-
-Profile selection is an application-level feature. It does not change the RUXMSG protocol or cryptographic algorithms.
-
----
-
-## Local identity persistence
-
-The current implementation persists the **local Ed25519 identity seed**.
-
-The storage layer uses the `keyring` dependency to access an operating-system credential store.
-
-The current implementation does **not** persist:
-
-* trusted-peer records;
-* SAS approvals;
-* active sessions;
-* ratchet state;
-* message keys;
-* replay windows;
-* message history.
-
-There is currently no `trust.sealed` file or persistent trusted-peer database.
-
-This means that a profile preserves the local cryptographic identity, but it does not preserve an authenticated session or a decision to automatically trust a peer on a future connection.
-
-### Credential-store requirements
-
-Credential-store behavior depends on the host operating system and its available credential infrastructure.
-
-On Linux, the default keyring backend uses the Secret Service interface. A working Secret Service provider may therefore be required for identity persistence.
-
-The identity seed should be treated as sensitive key material. Do not expose or manually copy it unless you understand the consequences.
-
----
-
-## Starting a listener
-
-Start a TCP listener with:
-
-```text
-start
-```
-
-The default listen address is determined by the current CLI implementation.
-
-An explicit address can be supplied with:
-
-```text
-start --addr 127.0.0.1:4443
-```
-
-For a listener reachable by another host, use an address appropriate to the network interface and firewall configuration.
-
-The listener can accept multiple incoming connections. Each accepted connection is represented as a peer session in the REPL.
-
-Stop the listener with:
-
-```text
-stop
-```
-
-Stopping the listener prevents new incoming connections. It is separate from closing already-established peer sessions.
-
----
-
-## Connecting to a peer
-
-Connect to a TCP listener with:
-
-```text
-connect 127.0.0.1:4443
-```
-
-For another host:
-
-```text
-connect 192.168.0.10:4443
-```
-
-The address is only used for network reachability. It is not the peer's cryptographic identity.
-
-A connection establishes a fresh RUXMSG session through the protocol handshake before application DATA is exchanged.
-
----
-
-## First-contact verification
-
-During session establishment, the handshake derives a short authentication string (SAS).
-
-The terminal client presents the SAS to the user.
-
-Compare the displayed value with the peer through an **independent channel**.
-
-For example, the users could compare the values verbally or through another communication channel.
-
-The connection should only be approved when:
-
-1. both peers are communicating with the intended person/device;
-2. the SAS values match exactly;
-3. the user has independently verified the comparison.
-
-A mismatch must be treated as a failed authentication event.
-
-Do **not** substitute any of the following for SAS verification:
-
-* IP address;
-* hostname;
-* DNS name;
-* Tailscale address;
-* Tailscale device name;
-* physical network location.
-
-Those values describe reachability or network identity, not the RUXMSG cryptographic identity.
-
----
-
-## Multiple peer sessions
-
-The current client is a **multi-session REPL**.
-
-A single process can maintain multiple peer connections simultaneously.
-
-Use:
-
-```text
-peers
-```
-
-to display the currently known peer/session labels.
-
-A peer can then be selected with:
-
-```text
-use <label>
-```
-
-Messages can be sent explicitly to a peer with:
-
-```text
-msg <label> hello
-```
-
-This means the CLI does not require one process per connection.
-
-Conceptually:
-
-```text
-ruxmsg
- │
- ├── peer-a
- │     └── RUXMSG session
- │
- ├── peer-b
- │     └── RUXMSG session
- │
- └── peer-c
-       └── RUXMSG session
-```
-
-The current client is still intentionally minimal. It does not provide persistent conversations, message history, contact management, or a graphical conversation interface.
-
----
-
-## Sending messages
-
-Send application text to a specific peer with:
-
-```text
-msg <label> <text>
-```
-
-For example:
-
-```text
-msg alice hello from bob
-```
-
-The CLI passes the application data to the established RUXMSG session.
-
-The session layer handles encryption, authentication, message-key management, and protocol framing.
-
-The terminal client does not implement a separate encryption scheme on top of the protocol.
-
----
-
-## Selecting a peer
-
-The `use` command selects a peer for commands that operate on the current session:
-
-```text
-use alice
-```
-
-The currently selected peer can then be inspected or interacted with using the applicable session commands.
-
-The explicit peer label can still be used with commands such as:
-
-```text
-msg alice hello
-close alice
-session alice
-```
-
-This allows the REPL to work with several simultaneous sessions without requiring separate terminal processes.
-
----
-
-## Inspecting sessions
-
-Inspect a session with:
-
-```text
-session <label>
-```
-
-This exposes session-level information provided by the current client.
-
-It is intended primarily for observing the state of the protocol implementation while developing and testing RUXMSG.
-
-The command does not expose private cryptographic key material.
-
----
-
-## Inspecting fingerprints
-
-Display the local or peer identity fingerprint with:
-
-```text
-fingerprint
-```
-
-A specific peer can be selected with:
-
-```text
-fingerprint <label>
-```
-
-Fingerprints are useful for identifying the cryptographic identity associated with a peer.
-
-A fingerprint should not be treated as proof that an identity belongs to a particular human unless it has been independently verified.
-
-The SAS comparison remains part of the first-contact authentication workflow.
-
----
-
-## Closing a peer session
-
-Close a specific session with:
-
-```text
-close <label>
-```
-
-A protocol `CLOSE` is used to terminate the RUXMSG session.
-
-Closing a session removes its active cryptographic state from the running client.
-
-The local persistent identity remains available to the profile.
-
-The client does not persist the closed session's ratchet state for later resumption.
-
----
-
-## Restart behavior
-
-Restarting `ruxmsg` does not restore existing cryptographic sessions.
-
-For example:
-
-```text
-Process A                         Process B
-   │                                │
-   │──── fresh handshake ──────────►│
-   │                                │
-   │──── encrypted session ────────►│
-   │                                │
-   X process exits                  │
-                                    │
-   │                                │
-   │──── new handshake ────────────►│
-   │                                │
-   │──── new encrypted session ────►│
-```
-
-The local Ed25519 identity can survive the restart because it is persistent.
-
-Session-specific state does not:
-
-* X25519 ephemeral keys;
-* session keys;
-* ratchet chains;
-* message keys;
-* replay state;
-* skipped keys;
-* active session state.
-
-A reconnect therefore establishes a new cryptographic session.
-
----
+`close <label>` sends a protocol CLOSE and ends the session. A CLOSE received from a peer is unauthenticated (anyone able to inject on the connection could send one), so the client reports it as the peer having closed, not as proof of intent.
 
 ## Tailscale
 
-Tailscale is optional.
-
-The CLI provides commands for interacting with the local Tailscale installation:
-
-```text
-tailscale status
-tailscale up
-tailscale ip
-```
-
-These commands are convenience functionality for network reachability.
-
-A Tailscale address can be used as a connection target:
-
-```text
-connect 100.x.y.z:<port>
-```
-
-The Tailscale identity is not used as the RUXMSG peer identity.
-
-The protocol still performs its own authenticated handshake and SAS verification.
-
-The security model is therefore:
-
-```text
-Tailscale
-    │
-    └── makes the peer reachable
-
-RUXMSG
-    │
-    ├── identifies the peer with Ed25519
-    ├── establishes a fresh X25519 session
-    ├── authenticates the handshake transcript
-    ├── verifies SAS
-    └── encrypts application DATA
-```
-
-RUXMSG itself does not require Tailscale.
-
----
+Tailscale provides reachability only. `tailscale status` reports whether it is running or needs login, `tailscale up` starts it, and `tailscale ip` prints your tailnet addresses. Use those addresses with `start --addr` and `connect`. If `tailscale` is not on `PATH` the client says how to install it.
 
 ## Troubleshooting
 
-### Credential-store errors
+| Symptom | Likely cause |
+| --- | --- |
+| `no identity loaded` | Run `profile use <name>` or `profile init <name>`. |
+| Storage error on `profile init`/`use` | Credential store unavailable. On Linux start a Secret Service provider. |
+| Fingerprint changes after restart | The credential store may not be persistent on your platform or build; treat as a bug and report it. |
+| `Connection refused` | Nobody is listening, wrong address, or firewall. Start the listener first. |
+| SAS words differ | Reject. Possible interception or a wrong connection. Never approve a mismatch. |
+| Handshake fails after a restart | Expected: session keys are memory-only; connect again. |
+| Session vanished | The connection dropped; connect again and re-verify. |
 
-If profile initialization or identity loading fails, verify that the host's credential-store infrastructure is available to the current user session.
+## Known limitations (RUXMSG/1 in progress)
 
-On Linux, check that a Secret Service provider is running and accessible.
+Tracked in the [conformance matrix](conformance-matrix.md); each is a spec 1.1 requirement not yet implemented:
 
-The problem is with local identity persistence rather than the RUXMSG network protocol.
+- typed SAS approval and timeouts;
+- terminal-output sanitization of peer text (a peer can currently send control characters);
+- automatic rekey and peer-initiated rekey handling;
+- handshake timeouts and a cap on concurrent unauthenticated handshakes;
+- loopback or tailnet default for `start`;
+- SAS approval from inside the chat view.
 
----
-
-### Connection refused
-
-If:
-
-```text
-connect 127.0.0.1:4443
-```
-
-fails with a connection-refused error:
-
-1. Verify that the other peer has run `start`.
-2. Verify the listener address and port.
-3. Verify that the target address is reachable.
-4. Check local and network firewalls.
-5. If using Tailscale, verify that the target peer is reachable through Tailscale.
-
----
-
-### SAS mismatch
-
-If the SAS values do not match:
-
-**abort the connection.**
-
-Do not approve the connection and do not attempt to make the values match by retrying blindly.
-
-Verify that both users are comparing the SAS generated by the same handshake and that they are communicating with the intended peers.
-
----
-
-### Handshake failure after restart
-
-A restart requires a new handshake.
-
-This is expected because active session and ratchet state are held in memory.
-
-The persistent profile identity should remain stable, but the session itself is new.
-
----
-
-### Unexpected fingerprint
-
-If a peer's fingerprint is unexpected:
-
-1. Do not assume the network address is sufficient evidence.
-2. Do not automatically accept the new identity.
-3. Compare the identity/fingerprint with an independently known value.
-4. Perform the SAS verification required by the protocol.
-
-The current implementation does not maintain a persistent trusted-peer database that automatically remembers previous approvals.
-
----
-
-## Current limitations
-
-The terminal client is deliberately smaller than a production messaging application.
-
-The current implementation does not yet provide:
-
-* persistent trusted-peer records;
-* automatic SAS bypass for previously verified peers;
-* contact/address-book management;
-* persistent message history;
-* persistent conversations;
-* offline message delivery;
-* a central peer directory;
-* asynchronous network infrastructure;
-* production transport integrations beyond the currently exposed TCP path;
-* a complete user-facing messaging interface.
-
-The client is primarily a usable terminal front end for exercising the RUXMSG protocol implementation.
-
----
-
-## Relationship to the library
-
-The CLI is a consumer of the RUXMSG library.
-
-The major boundaries are:
-
-```text
-ruxmsg CLI
-    │
-    ▼
-PeerConnection
-    │
-    ├── Handshake
-    ├── Session management
-    ├── Ratchet
-    ├── DATA protection
-    └── Close/rekey
-    │
-    ▼
-Transport
-    │
-    ▼
-TCP
-```
-
-The CLI does not define the wire protocol.
-
-Protocol behavior is defined by the [protocol specification](protocol-spec.md), while the implementation structure is described in the [architecture guide](architecture.md).
-
----
-
-## Related documentation
-
-* [Architecture](architecture.md) — implementation structure and data flow.
-* [Security model](security-model.md) — threat model and security boundaries.
-* [Protocol specification](protocol-spec.md) — normative protocol and wire requirements.
-* [Protocol reference](protocol-reference.md) — implementation-facing protocol reference.
-* [Conformance matrix](conformance-matrix.md) — implementation and testing status.
-* [Library guide](library.md) — library API and integration.
+See the [security model](security-model.md), [architecture](architecture.md), and [specification](protocol-spec.md) for details.
