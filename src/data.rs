@@ -7,7 +7,7 @@
 use std::fmt;
 
 use ciborium::value::Value;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 
 use crate::crypto::{decrypt_message, derive_message_key, encrypt_message, message_nonce};
@@ -122,7 +122,6 @@ impl DataPlaintext {
         if padding.iter().any(|byte| *byte != 0) {
             return Err(Error::InvalidPadding);
         }
-
         Ok(Self {
             content: content.ok_or(Error::InvalidDataPayload)?,
             padding,
@@ -136,7 +135,7 @@ pub struct DataSender {
     session_id: SessionId,
     #[zeroize(skip)]
     direction: DirectionId,
-    chain_key: [u8; 32],
+    chain_key: Zeroizing<[u8; 32]>,
     #[zeroize(skip)]
     counter: u64,
 }
@@ -167,10 +166,16 @@ impl DataSender {
     pub fn encrypt(&mut self, content: &[u8]) -> Result<Frame> {
         let counter = self.counter;
 
+        // 1. Check counter limits BEFORE doing any work or mutating state
+        let next_counter = counter.checked_add(1).ok_or(Error::CounterOverflow)?;
+
+        // 2. Prepare plaintext
         let plaintext = DataPlaintext::padded(content)?.encode()?;
 
+        // 3. Derive key (does not mutate self.chain_key yet)
         let (message_key, next_chain) = derive_message_key(&self.chain_key, self.direction);
 
+        // 4. Encrypt
         let aad = data_aad(self.session_id, self.direction, counter)?;
 
         let ciphertext = encrypt_message(
@@ -180,16 +185,20 @@ impl DataSender {
             &plaintext,
         )?;
 
-        self.chain_key = Zeroizing::new(next_chain);
 
-        self.counter = self.counter.checked_add(1).ok_or(Error::CounterOverflow)?;
+        // 5. Commit chain and counter only after everything succeeds
+        self.chain_key = next_chain;
+        self.counter = next_counter;
 
+
+        // 6. Return frame
         encode_payload(DataPayload {
             session_id: self.session_id,
             direction_id: self.direction,
             message_counter: counter,
             ciphertext,
         })
+
     }
 }
 

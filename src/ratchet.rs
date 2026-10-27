@@ -4,7 +4,6 @@
 //! supported only within the configured skipped-key and replay limits.
 
 use std::collections::BTreeMap;
-use zeroize::Zeroize;
 
 use crate::crypto::derive_message_key;
 use crate::error::{Error, Result};
@@ -22,15 +21,6 @@ pub enum ReplayStatus {
 pub struct ReplayWindow {
     highest: Option<u64>,
     bits: u64,
-}
-
-impl Drop for ReceivingChain {
-    fn drop(&mut self) {
-        self.chain_key.zeroize();
-        for key in self.skipped.values_mut() {
-            key.zeroize();
-        }
-    }
 }
 
 impl Default for ReplayWindow {
@@ -133,20 +123,27 @@ impl ReceivingChain {
     ///
     /// Keys remain retained until `commit_message_key()` is called after
     /// successful authentication and plaintext validation.
-    pub fn prepare_message_key(&mut self, counter: u64) -> Result<Zeroizing<[u8; 32]>> {
+    pub fn prepare_message_key(&mut self, counter: u64) -> Result<[u8; 32]> {
         // Do not remove the key here. Authentication may still fail.
         if let Some(key) = self.skipped.get(&counter) {
-            return Ok(key.clone());
+            return Ok(**key);
         }
 
         if counter < self.next_counter {
             return Err(Error::MessageKeyUnavailable(counter));
         }
 
+        // Validate the entire requested derivation range before mutating the chain.
+        // Because next_counter must advance to `counter + 1` after deriving the target key,
+        // `counter` cannot be u64::MAX. This single check protects both the skipped loop 
+        // and the target key derivation from overflowing.
+        if counter == u64::MAX {
+            return Err(Error::CounterOverflow);
+        }
+
         let gap = counter - self.next_counter;
 
-        if gap > u64::from(MAX_SKIPPED_KEYS) || self.skipped.len() >= usize::from(MAX_SKIPPED_KEYS)
-        {
+        if gap > u64::from(MAX_SKIPPED_KEYS) || self.skipped.len() >= usize::from(MAX_SKIPPED_KEYS) {
             return Err(Error::SkippedKeyLimit);
         }
 
@@ -154,32 +151,21 @@ impl ReceivingChain {
         // reordered messages can still be authenticated later.
         while self.next_counter < counter {
             let (key, next) = derive_message_key(&self.chain_key, self.direction);
-
-            self.skipped.insert(self.next_counter, Zeroizing::new(key));
-
-            self.chain_key = Zeroizing::new(next);
-
-            self.next_counter = self
-                .next_counter
-                .checked_add(1)
-                .ok_or(Error::CounterOverflow)?;
+            self.skipped.insert(self.next_counter, key);
+            self.chain_key = next;
+            self.next_counter += 1;
         }
 
         // Derive the target key and retain it as well. It must survive an
         // authentication failure so that a legitimate frame using the same
         // counter can be retried.
         let (key, next) = derive_message_key(&self.chain_key, self.direction);
+        self.chain_key = next;
+        self.next_counter += 1;
+        let result = *key;
+        self.skipped.insert(counter, key);
 
-        self.chain_key = Zeroizing::new(next);
-
-        self.next_counter = self
-            .next_counter
-            .checked_add(1)
-            .ok_or(Error::CounterOverflow)?;
-
-        self.skipped.insert(counter, Zeroizing::new(key));
-
-        Ok(Zeroizing::new(key))
+        Ok(result)
     }
 
     /// Commits a successfully authenticated message key.

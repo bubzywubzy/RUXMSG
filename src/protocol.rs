@@ -4,6 +4,7 @@
 //! protocol decision, specification update, vectors, and interoperability review.
 
 use crate::error::{Error, Result};
+use zeroize::Zeroize;
 
 pub const MAX_FRAME_SIZE: u32 = 1_048_576;
 pub const REPLAY_WINDOW_SIZE: u8 = 64;
@@ -12,6 +13,7 @@ pub const DEFAULT_PADDING_QUANTUM: usize = 256;
 pub const REKEY_DRAIN_TIMEOUT_SECS: u64 = 15;
 pub const REKEY_INTERVAL_SECS: u64 = 24 * 60 * 60;
 pub const REKEY_MESSAGE_LIMIT: u64 = 1_000_000;
+pub const MAX_PREPARED_KEYS: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -93,7 +95,7 @@ impl FrameLength {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Zeroize)]
 pub struct SessionId([u8; 16]);
 
 impl SessionId {

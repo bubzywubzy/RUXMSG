@@ -18,7 +18,7 @@ use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::error::{Error, Result};
 use crate::identity::PeerIdentity;
@@ -30,6 +30,7 @@ const RESPONDER_SIGNATURE_DOMAIN: &[u8] = b"RUXMSG/1/responder";
 const INITIATOR_CONFIRM_DOMAIN: &[u8] = b"RUXMSG/1/confirm/I";
 const RESPONDER_CONFIRM_DOMAIN: &[u8] = b"RUXMSG/1/confirm/R";
 const ZERO_SALT: [u8; 32] = [0; 32];
+const COMMIT_DOMAIN: &[u8] = b"RUXMSG/1/COMMIT";
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct IdentityKeypair {
@@ -167,6 +168,14 @@ pub fn transcript_hash(transcript: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Hashes the exact HELLO payload bytes for the RUXMSG commitment.
+pub fn commit_hash(hello_payload_bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(COMMIT_DOMAIN);
+    hasher.update((hello_payload_bytes.len() as u32).to_be_bytes());
+    hasher.update(hello_payload_bytes);
+    hasher.finalize().into()
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SasIndices {
     pub first: u16,
@@ -199,14 +208,25 @@ pub fn sas_words(transcript_hash: &[u8; 32]) -> [&'static str; 3] {
     ]
 }
 
-#[derive(Debug, Zeroize, ZeroizeOnDrop)]
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SessionKeys {
     pub root_key: [u8; 32],
     pub initiator_to_responder: [u8; 32],
     pub responder_to_initiator: [u8; 32],
-    #[zeroize(skip)]
     pub session_id: SessionId,
     pub confirmation_key: [u8; 32],
+}
+
+impl fmt::Debug for SessionKeys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionKeys")
+            .field("session_id", &self.session_id)
+            .field("root_key", &"REDACTED")
+            .field("initiator_to_responder", &"REDACTED")
+            .field("responder_to_initiator", &"REDACTED")
+            .field("confirmation_key", &"REDACTED")
+            .finish()
+    }
 }
 
 /// Derives the root, directional, confirmation, and session-ID values.
@@ -267,18 +287,21 @@ pub fn verify_confirmation(
 }
 
 /// Derives one message key and the next chain key for a direction.
-pub fn derive_message_key(chain_key: &[u8; 32], direction: DirectionId) -> ([u8; 32], [u8; 32]) {
+pub fn derive_message_key(
+    chain_key: &[u8; 32],
+    direction: DirectionId,
+) -> (Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>) {
     let hkdf = Hkdf::<Sha256>::new(Some(&ZERO_SALT), chain_key);
     let direction_bytes = (direction as u32).to_be_bytes();
-    let mut message_key = [0; 32];
-    let mut next_chain_key = [0; 32];
+    let mut message_key = Zeroizing::new([0u8; 32]);
+    let mut next_chain_key = Zeroizing::new([0u8; 32]);
     let mut message_info = b"RUXMSG/1/message-key".to_vec();
     message_info.extend_from_slice(&direction_bytes);
     let mut chain_info = b"RUXMSG/1/chain-key".to_vec();
     chain_info.extend_from_slice(&direction_bytes);
-    hkdf.expand(&message_info, &mut message_key)
+    hkdf.expand(&message_info, message_key.as_mut_slice())
         .expect("fixed HKDF output");
-    hkdf.expand(&chain_info, &mut next_chain_key)
+    hkdf.expand(&chain_info, next_chain_key.as_mut_slice())
         .expect("fixed HKDF output");
     (message_key, next_chain_key)
 }
