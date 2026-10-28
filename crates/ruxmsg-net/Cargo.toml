@@ -1,0 +1,19 @@
+[package]
+name = "ruxmsg-net"
+description = "Tokio driver for the RUXMSG sans-IO engine: framing, deadlines, bounded queues, listener."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ruxmsg = { package = "ruxmsg-core", path = "../ruxmsg-core" }
+tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync"] }
+zeroize = "1.8"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time", "sync", "test-util"] }
+
+[lints]
+workspace = true

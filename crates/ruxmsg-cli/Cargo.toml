@@ -1,0 +1,34 @@
+[package]
+name = "ruxmsg-cli"
+description = "RUXMSG terminal client: REPL and conversation view."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ruxmsg_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ruxmsg"
+path = "src/main.rs"
+
+[dependencies]
+ruxmsg = { package = "ruxmsg-core", path = "../ruxmsg-core" }
+ruxmsg-net = { path = "../ruxmsg-net" }
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+futures-util = { version = "0.3", default-features = false }
+keyring = "4.2.0"
+ratatui = "0.29.0"
+rustix = { version = "1", features = ["process", "fs"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt", "macros", "signal", "time", "sync"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+unicode-width = "0.2"
+zeroize = "1.8"
+
+[lints]
+workspace = true
