@@ -27,7 +27,9 @@ RUXMSG has no trust store. A peer is never trusted because it sent a key or beca
 
 Because the SAS covers the identities, an approved SAS authenticates who you are talking to for that session.
 
-**Why the commitment matters.** The SAS carries 33 bits, so an attacker needs about 2³³ tries to fake one. If the attacker can choose its handshake values after seeing yours, it can perform those tries offline and make both of its connections display identical words. The initiator therefore commits to its HELLO before seeing the responder's; the attacker must then fix its values first and has a 1 in 2³³ chance per attempt. This requirement (D-012) is in spec 1.1 and is not yet implemented.
+**Why the commitment matters.** The SAS carries 33 bits, so an attacker needs about 2³³ tries to fake one. If the attacker can choose its handshake values after seeing yours, it can perform those tries offline and make both of its connections display identical words. The initiator therefore commits to its HELLO before seeing the responder's; the attacker must then fix its values first and has a 1 in 2³³ chance per attempt. This requirement (D-012) is implemented in the engine, which sends nothing but COMMIT before it has the responder's HELLO and refuses to continue if the reveal does not match.
+
+The SAS is typed, not clicked: approval needs the word `yes` and Enter, so a stray key cannot approve. It expires after 120 seconds and counts as a rejection.
 
 **Verifying well.** Use a channel that is not the RUXMSG connection. If you already know the peer's fingerprint, check it as well. Reject on any difference. Never approve because the address or Tailscale name looks right.
 
@@ -64,11 +66,29 @@ Requirements (spec §10):
 
 ## Display safety
 
-Text from a peer is untrusted input to your terminal. Control characters (including ESC and C1 controls) and bidirectional override characters must be escaped or removed before display, or a peer can move the cursor, overwrite earlier lines, or spoof the interface. *Not yet implemented in the client.*
+Text from a peer is untrusted input to your terminal. Control characters (including ESC and C1 controls) and bidirectional override characters must be escaped or removed before display, or a peer can move the cursor, overwrite earlier lines, or spoof the interface. The client escapes these characters when a message arrives, so they appear as visible `\u{..}` sequences; the escaped text is what is stored and drawn.
 
 ## Resource limits
 
-Frames, handshakes and caches are bounded: a 1 MiB absolute frame cap (spec 1.1 adds small per-type caps for handshake and control frames), a 64-message replay window, at most 64 skipped keys per gap with a hard cache ceiling of 128, handshake timeouts, and a cap on concurrent unauthenticated handshakes. Timeouts, per-type caps and the handshake cap are planned.
+Everything an unauthenticated peer can influence is bounded:
+
+- frames: a 1 MiB absolute cap, and small per-type caps (1,024 bytes for handshake frames, 128 for SESSION_CONFIRM, 256 for CLOSE) enforced from the header before any payload is read; message content is limited to 64 KiB;
+- a 64-message replay window, at most 64 skipped keys per gap and a hard key-cache ceiling of 128;
+- time: 15 seconds per handshake frame, 120 seconds for the SAS decision and 180 seconds for a whole handshake, with a drain window of 15 seconds after a rekey;
+- concurrency: at most four unauthenticated inbound handshakes per listener and four pending SAS requests;
+- memory: every queue in the network layer and the client is bounded, and a write that stalls for 15 seconds ends the connection.
+
+A frame that is malformed, truncated or oversized ends the session. An authentication or replay failure on a DATA frame drops only that frame.
+
+## Local state and its limits
+
+Messages are kept only in a bounded in-memory scrollback per conversation. Buffers holding keys, plaintext and scrollback are zeroized when replaced, evicted or dropped. On exit, on SIGTERM, SIGHUP or SIGINT, and on a panic, the client closes its sessions, drops all conversation state, restores the terminal and clears the screen and its scrollback. Core dumps are disabled and the process is marked non-dumpable where the operating system allows it.
+
+This narrows what a later local reader can recover; it does not defeat a live compromise. It cannot cover `SIGKILL` or power loss, memory the OS has already swapped out (memory is not locked), the terminal emulator's own buffers, or copies a compromised process makes while running.
+
+## Configuration file
+
+The optional config file is the one input the client reads from a user-writable place. It is read-only, global (not tied to a profile), size-limited, schema-closed and never interpolated or executed. The loader refuses symlinks and files that another user could write, and its errors never quote the file. It can change appearance and navigation keys only; it cannot rebind Enter, typing, Ctrl-C, Ctrl-D or anything in the SAS prompt.
 
 ## Operational guidance
 
@@ -76,10 +96,10 @@ Frames, handshakes and caches are bounded: a 1 MiB absolute frame cap (spec 1.1 
 2. Confirm the words belong to the connection you just made.
 3. Protect the OS account and credential store that hold your identity.
 4. Treat an unexpected peer fingerprint as a security event.
-5. Bind listeners to loopback or a tailnet address rather than all interfaces.
+5. Keep the default loopback listener, or bind a tailnet address, rather than all interfaces; the client warns if you bind every interface.
 6. Keep dependencies updated.
 7. Obtain independent security review before relying on RUXMSG for anything serious.
 
 ## Implementation status
 
-The repository is a working conformance foundation with deterministic tests and fuzz targets, not a finished production messenger. Items required by spec 1.1 but not yet built are listed in the [conformance matrix](conformance-matrix.md). No independent review or interoperability testing has been done.
+The protocol core is a sans-IO state machine with deterministic tests, and the Tokio driver has fault-injection tests. Remaining gaps are listed in the [conformance matrix](conformance-matrix.md): published known-answer vectors, recorded fuzzing runs, memory locking, and automated tests for zeroization and the exit wipe. No independent review or interoperability testing has been done.

@@ -10,7 +10,9 @@ cargo-fuzz = true
 [dependencies]
 arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = "0.4"
-ruxmsg = { path = ".." }
+zeroize = "1.8"
+ruxmsg = { package = "ruxmsg-core", path = "../crates/ruxmsg-core" }
+ruxmsg-cli = { path = "../crates/ruxmsg-cli" }
 
 [[bin]]
 name = "frame_decode"
@@ -48,15 +50,24 @@ doc = false
 bench = false
 
 [[bin]]
-name = "session_lifecycle"
-path = "fuzz_targets/session_lifecycle.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "ratchet_state"
 path = "fuzz_targets/ratchet_state.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "engine_inputs"
+path = "fuzz_targets/engine_inputs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_parse"
+path = "fuzz_targets/config_parse.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

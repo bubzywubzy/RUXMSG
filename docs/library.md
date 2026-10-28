@@ -1,35 +1,33 @@
 # RUXMSG library
 
-This crate is the conformance foundation for RUXMSG/1, a volatile two-party end-to-end encrypted messaging protocol. It provides typed protocol constants, deterministic handshake transcript encoding, Ed25519 signatures, X25519 agreement, transcript hashing, SAS rendering, HKDF key derivation, confirmation MACs, directional ratchets, message nonces, ChaCha20-Poly1305 helpers, strict frame handling, authenticated padded DATA, bounded replay and skipped-key state, session lifecycle and rekey primitives, and in-memory and framed transport abstractions.
+`ruxmsg-core` is the protocol core for RUXMSG/1, a volatile two-party end-to-end encrypted messaging protocol. It contains no I/O: typed protocol constants, strict frame handling, deterministic handshake transcript encoding, Ed25519 signatures, X25519 agreement, SAS rendering, HKDF key derivation, confirmation MACs, directional ratchets, authenticated padded DATA, bounded replay and skipped-key state, and the sans-IO [`machine::Engine`] that ties them together.
 
 ## Recommended entry points
 
-- [`connection::PeerConnection`](../src/connection.rs) is the high-level synchronous facade for one transport. For TCP, `split_tcp()` yields independent reader and writer halves.
-- [`engine`](../src/engine.rs) establishes an authenticated session over any [`transport::Transport`](../src/transport.rs).
-- [`manager::SessionManager`](../src/manager.rs) owns the active session and any draining predecessor.
-- [`transport::InMemoryTransport`](../src/transport.rs) gives deterministic two-peer tests.
-- [`transport::FramedTransport`](../src/transport.rs) adapts a readable/writable stream to the frame layer.
-- [`storage`](../src/storage.rs) persists exactly one thing: the local identity seed.
+- [`machine::Engine`] consumes an [`machine::Input`] and returns ordered [`machine::Effect`]s. It has no clock, socket, thread, runtime or callback; deadlines are effects and expiry is an input.
+- `ruxmsg-net` drives an `Engine` over any Tokio byte stream, owns the timers, queues and listener, and is what the client uses.
+- [`storage`] persists exactly one thing: the local identity seed, through a `SecretStore` you provide. The client's keyring adapter lives in `ruxmsg-cli`.
+- [`display::sanitize_for_display`] neutralizes control and bidirectional characters in peer text.
 
 ## Typical lifecycle
 
 1. Load or generate the persistent identity (`storage::IdentityKeyStore`).
-2. Establish a fresh session over a connection with `engine` or `PeerConnection`, supplying a SAS-approval callback.
-3. Present the three-word SAS and the peer fingerprint to the user; return `true` only after both people have compared them over an independent channel. This happens on **every** connection; the library remembers nothing.
-4. Send and receive application bytes through the facade.
-5. Rekey when the session policy requires it. Rekey does not use SAS; it must present the same identities as the active session.
-6. Close, or lose the connection. The session and all its keys are destroyed; a new connection is a new handshake.
+2. Create an `Engine` with the transport role (the dialing side is the initiator), the identity and an `Entropy` source, then feed it `Input::Start`.
+3. Execute each returned `Effect` in order: write frames, arm and cancel deadlines, deliver messages, and surface notifications.
+4. On `Effect::RequestSas`, show the three words and the peer fingerprint, and answer with `Input::SasDecision(true)` only after both people compared them over an independent channel. This happens on **every** connection; nothing is remembered.
+5. Feed received frames as `Input::FrameReceived`, expiry as `Input::Timeout`, and loss of the transport as `Input::TransportClosed`. After a `CloseTransport` effect the engine ignores all input.
+6. A rekey needs no SAS; it must present the same identities as the active session. When the connection ends the session and its keys are destroyed.
 
-The [architecture guide](architecture.md) explains ownership and data flow. The [security model](security-model.md) explains what callers must and must not persist or display.
+The [architecture guide](architecture.md) explains ownership and the driver contract. The [security model](security-model.md) explains what callers must and must not persist or display.
 
 ## Important boundaries
 
-- **Persistence.** The storage traits hold the identity seed only. They must not be used for session keys, ratchet state, peer identities, trust state or history.
+- **Persistence.** The storage trait holds the identity seed only. It must not be used for session keys, ratchet state, peer identities, trust state or history.
 - **Volatility.** Session keys, ephemeral private keys, chains, replay windows, skipped keys and counters are memory-only and connection-bound.
-- **Trust.** Receiving a public key confers no trust. The SAS callback is the only authentication of a first-contact peer, and it is required each time.
-- **Display.** Application bytes from a peer are untrusted; sanitize control characters before rendering them to a terminal.
-- **Threads.** Only one method that mutates session state may run at a time on a `PeerConnection`. Use the split TCP API for concurrent reading and writing.
+- **Trust.** Receiving a public key confers no trust. The SAS decision is the only authentication of a first-contact peer, and it is required each time.
+- **Display.** Application bytes from a peer are untrusted; sanitize them before rendering to a terminal.
+- **Drivers.** A driver must apply effects in order, must never treat a partially written frame as unsent, and must bound every queue it adds. `ruxmsg-net` is the reference driver.
 
 ## Status
 
-The crate contains a synchronous two-peer handshake engine and session, rekey and drain primitives. Some RUXMSG/1 specification 1.1 requirements are not yet implemented, including the handshake commitment, rekey identity continuity, per-type limits and timeouts, and key zeroization on all chain state. See the [conformance matrix](conformance-matrix.md). Independent interoperability and security review have not been done, so do not treat the crate as production-secure because its individual primitives have tests.
+Independent interoperability and security review have not been done, so do not treat the crate as production-secure because its primitives have tests. See the [conformance matrix](conformance-matrix.md).

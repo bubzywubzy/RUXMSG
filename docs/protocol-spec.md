@@ -2,7 +2,7 @@
 
 **Protocol:** RUXMSG/1
 **Specification version:** 1.1 (draft, supersedes 1.0)
-**Status:** Normative. Items marked **[PROPOSED]** are new in 1.1, are not yet implemented, and need owner confirmation (see Appendix B).
+**Status:** Normative. Items marked **[PROPOSED]** are new in 1.1 and need owner confirmation (see Appendix B). The reference implementation already follows them; see the conformance matrix.
 **Scope:** Two-party, direct, end-to-end encrypted, volatile messaging. Groups, anonymity features and offline delivery are RUXMSG/2 (Appendix C) and are **not** part of this document.
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.

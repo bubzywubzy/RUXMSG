@@ -8,32 +8,24 @@ RUXMSG/1 is a volatile two-party messaging library and terminal client. The netw
 
 ```mermaid
 flowchart TD
-    REPL[REPL and chat view\nsrc/bin/ruxmsg.rs]
-    APP[Application\nsessions, events, listener]
-    WORKER[Per-session worker threads]
-    CONN[PeerConnection\nconnection.rs]
-    ENGINE[Handshake engine\nengine.rs / handshake.rs]
-    MANAGER[SessionManager\nmanager.rs / session.rs]
-    CRYPTO[Crypto, ratchet, DATA\ncrypto.rs / ratchet.rs / data.rs]
-    WIRE[Frames and CBOR\nwire.rs / encoding.rs / close.rs]
-    TRANS[Transport trait\ntransport.rs]
-    STORE[Identity seed storage\nstorage.rs]
-    NET[TCP or another reachable network]
+    CLI[ruxmsg-cli\nREPL, conversation view, config]
+    NET[ruxmsg-net\nTokio driver, framing, deadlines, listener]
+    CORE[ruxmsg-core\nsans-IO engine, wire, crypto]
+    STORE[identity seed\nOS credential store]
+    NETW[TCP or another reachable network]
 
-    REPL --> APP
-    REPL --> STORE
-    APP --> WORKER
-    WORKER --> CONN
-    CONN --> ENGINE
-    CONN --> MANAGER
-    ENGINE --> CRYPTO
-    MANAGER --> CRYPTO
-    ENGINE --> WIRE
-    MANAGER --> WIRE
-    CONN --> TRANS
-    TRANS --> WIRE
-    TRANS --> NET
+    CLI --> NET
+    CLI --> CORE
+    CLI --> STORE
+    NET --> CORE
+    NET --> NETW
 ```
+
+| Crate | Owns | Must not contain |
+| --- | --- | --- |
+| `ruxmsg-core` | frames and CBOR, handshake payloads, crypto, ratchets, DATA, the `Engine` state machine, display sanitizing, the `SecretStore` trait | sockets, threads, clocks, a runtime, a terminal, an OS credential store (a test asserts its manifest) |
+| `ruxmsg-net` | one Tokio task per connection, the frame decoder, deadlines, bounded queues, the listener and its handshake cap | protocol decisions, UI, storage |
+| `ruxmsg-cli` | the REPL, the conversation view, SAS prompts, key bindings, the read-only config loader, the keyring adapter, process hardening | protocol logic |
 
 ## Layer responsibilities
 
@@ -43,7 +35,7 @@ flowchart TD
 
 ### Handshake and transcript
 
-`handshake.rs` defines the handshake payloads and `encoding.rs` defines the transcript. `engine.rs` drives both roles over a `Transport`. Spec 1.1 flow:
+`handshake.rs` defines the handshake payloads and `encoding.rs` defines the transcript. `machine.rs` drives both roles as a sans-IO state machine. Spec 1.1 flow:
 
 1. initiator sends COMMIT, a hash of its yet-unrevealed HELLO;
 2. responder sends its HELLO;
@@ -54,11 +46,36 @@ flowchart TD
 7. both derive session keys with X25519 and HKDF-SHA-256;
 8. both exchange confirmation MACs, and only then is a session established.
 
-The COMMIT step exists so that an active attacker cannot choose its values after seeing the other side's and grind the 33-bit SAS. The transcript excludes signatures. *Status: steps 1 to 3 and the local-transcript check in step 6 are planned; the rest is implemented.*
+Exact order (initial uses HANDSHAKE frames, rekey uses REKEY frames):
+
+| # | Sender | Frame | Receiver action |
+| ---: | --- | --- | --- |
+| 1 | initiator | COMMIT | validate version, suite, purpose and `previous_session_id`; store the commitment |
+| 2 | responder | HELLO | check role, suite, purpose and previous session against the sent COMMIT; reject own identity or ephemeral |
+| 3 | initiator | HELLO (reveal) | hash the exact payload bytes, constant-time compare to the commitment, match the COMMIT fields, reject own identity or ephemeral |
+| 4 | both | (local) | build transcript, hash and SAS (initial) |
+| 5 | initiator | AUTH stage 0 | sent after SAS approval (initial) or immediately (rekey); the responder verifies Sig_I against its own transcript |
+| 6 | responder | AUTH stage 1 | sent only after Sig_I verifies; the initiator verifies Sig_R |
+| 7 | initiator, then responder | SESSION_CONFIRM | verify the MAC in constant time and the sender's role; ACTIVE after both |
+
+COMMIT is sent only by the initiator, first. It authenticates nothing cryptographically: it binds the initiator to the exact bytes of its later HELLO.
+
+Forbidden before validation (any violation aborts the candidate and sends no further handshake frame):
+
+- a responder HELLO before a valid COMMIT, and an initiator HELLO before the responder HELLO;
+- the transcript, SAS or key derivation before both HELLOs are present and the commitment has verified;
+- any AUTH signature before SAS approval (initial) or before both HELLOs verify (rekey);
+- Sig_R before Sig_I verifies against the locally built transcript;
+- SESSION_CONFIRM before AUTH completes, and DATA before ACTIVE;
+- a second COMMIT or HELLO, a frame of the wrong type for the purpose, or any frame out of sequence.
+
+The one legal early frame is the initiator's AUTH arriving while the responder's human is still reading the SAS; the engine holds that single frame until the decision. These cases are tested in `crates/ruxmsg-core/tests/engine.rs`.
+
+The COMMIT step exists so that an active attacker cannot choose its values after seeing the other side's and grind the 33-bit SAS. The transcript excludes signatures. Signature verification is strict (non-canonical signatures and small-order keys are rejected).
 
 ### Sessions and message protection
 
-`manager.rs` owns the active session and, during a rekey drain, one draining predecessor. `session.rs` enforces lifecycle transitions and rekey timing. `ratchet.rs` holds the receiving chain, replay window and bounded key cache. `data.rs` pads, encrypts, decrypts and validates DATA. `crypto.rs` holds primitive composition, nonce and key derivation.
+The engine owns the active session and, during a rekey drain, one draining predecessor. `ratchet.rs` holds the receiving chain, replay window and bounded key cache. `data.rs` pads, encrypts, decrypts and validates DATA. `crypto.rs` holds primitive composition, nonce and key derivation.
 
 Receive order matters: replay classification, key **prepare** (cache without consuming), AEAD decrypt, plaintext and padding validation, then **commit** (consume key, record counter). A forged frame therefore cannot burn a legitimate message's key.
 
@@ -66,31 +83,55 @@ Only the active session originates DATA. A draining session accepts eligible in-
 
 ### Rekey
 
-Either peer may start a rekey, using the same handshake with the REKEY frame type. A rekey does not use SAS. It is authenticated by identity continuity: the candidate must name the active session as its predecessor and present the same identities that authenticated it. A failed candidate is discarded and the old session returns to ACTIVE. *Status: rekey primitives and a synchronous rekey exist; identity continuity, failure recovery, peer-initiated handling in the reader loop, and the automatic trigger are planned.*
+Either peer may start a rekey (24 h after activation, after 1,000,000 messages, or on request), using the same handshake with the REKEY frame type. A rekey does not use SAS. It is authenticated by identity continuity: the candidate must name the active session as its predecessor and present the same identities that authenticated it. A failed candidate is discarded and the old session returns to ACTIVE. Simultaneous rekeys are resolved by comparing raw identity keys.
 
-### Wire and transport
+### Wire and framing
 
-`wire.rs` implements the six-byte frame header and strict payload limits, and canonical CBOR validation (malformed, non-canonical, duplicate-key, unknown-key and trailing-byte input is rejected). `transport.rs` provides:
+`wire.rs` implements the six-byte frame header, per-type payload limits and canonical CBOR validation (malformed, non-canonical, duplicate-key, unknown-key and trailing-byte input is rejected). Version, type and length are checked from the header before any payload is read. Reading frames off a stream is the net layer's `FrameDecoder`.
 
-- `Transport`, the frame-level I/O boundary;
-- `InMemoryTransport` for deterministic tests;
-- `FramedTransport` over any readable/writable stream;
-- `Demuxer`, which buffers DATA and CLOSE frames that arrive while a handshake or rekey is waiting for control frames.
+## Sans-IO engine (`crates/ruxmsg-core/src/machine.rs`)
 
-### Connection facade
+`Engine::handle(Input) -> Vec<Effect>` is the protocol core. It is the only implementation of the handshake and session logic; the earlier blocking implementation has been removed.
 
-`PeerConnection<T>` is the single-transport facade: establish a session, send and receive, rekey, expire the drain window, close. For TCP, `split_tcp()` yields a reader half (owns socket reads, handles receive and rekey) and a writer half (sends and closes through a synchronized write clone), so a blocked read never blocks a send. Both halves share one `SessionManager` behind a mutex that is never held across a socket read.
+- **No ambient dependencies.** The engine has no clock, socket, thread, runtime handle or UI callback (enforced by a source check in `crates/ruxmsg-core/tests/engine.rs`). Randomness is the injected `Entropy` trait.
+- **Inputs:** `Start`, `FrameReceived`, `SasDecision`, `LocalSend`, `LocalClose`, `RequestRekey`, `Timeout(DeadlineId)`, `TransportClosed`.
+- **Effects, applied in the order returned:** `Send`, `SetDeadline`, `CancelDeadline`, `RequestSas`, `Deliver`, `Notify`, `CloseTransport`. A `Send` that precedes `CloseTransport` must be written first.
+- **Deadlines are effects.** The engine asks for one with `SetDeadline { id, kind, after }` and learns of expiry through `Timeout(id)`. A `Timeout` for an id the engine no longer has armed is ignored, so a timer that raced a cancellation is harmless.
+- **Closed is terminal.** Every input after `CloseTransport` returns no effects.
 
-## Client runtime and threads
+### Timeout policy
 
-The binary is a single process holding many independent two-party sessions.
+| Deadline | Armed | Expiry |
+| --- | --- | --- |
+| Frame, 15 s | while waiting for COMMIT, HELLO, reveal or confirmation; for rekey, every wait | initial: close; rekey: abort the candidate only |
+| SAS, 120 s | while the local human decides | close (treated as rejection) |
+| Total, 180 s | whole handshake or rekey | initial: close; rekey: abort the candidate only |
+| Rekey due, 24 h | after each activation | begin a rekey |
+| Rekey retry, 30 s | after a failed rekey (not in the spec) | begin a rekey |
+| Drain, 15 s | after promotion | destroy the draining session |
 
-- **Main thread**: raw-mode REPL loop, or the Ratatui chat view. It drains a single `NetEvent` channel and sends `SessionCommand`s to workers.
-- **Listener thread**: non-blocking accept loop started by `start`; spawns a worker per incoming connection.
-- **Per-session worker**: runs the handshake (calling out to the UI for SAS approval over a channel), splits the TCP stream, then runs a reader loop; a paired writer thread executes `Send` and `Close` commands.
-- **Shared state**: a mutex-guarded label-to-`PeerHandle` map (address, fingerprint, status, command sender).
+Spec §11 gives a 15 s per-frame read timeout and a 120 s SAS timeout without saying how they interact. A peer waiting for our AUTH cannot tell a slow human from a dead link, so the 15 s deadline is **not** armed while the peer may still be in its SAS wait (after the HELLOs, before AUTH is exchanged); the 180 s total bounds that span instead. This reading is an implementation decision and should be confirmed in the spec.
 
-Session lifetime equals connection lifetime: when a reader loop ends, the session entry is removed and its keys drop.
+A rekey timeout aborts the candidate and never closes the session. A later REKEY or SESSION_CONFIRM frame that belongs to an aborted attempt is out of sequence and ends the session; both peers time out on the same schedule, so an honest peer does not send one.
+
+### Cancellation and partial writes (driver contract)
+
+`select!` cancellation does not roll back protocol state, so only the engine mutates state, and only inside `handle`. Reads and writes are never raced in a `select!` arm. A frame read keeps its partial buffer across iterations. Once the first byte of a frame is written, the write runs to completion or the connection is treated as lost (`TransportClosed`); a partially written frame is never treated as unsent.
+
+## Client runtime
+
+The binary is one single-threaded Tokio task set holding many independent two-party sessions.
+
+- **UI task** (`crates/ruxmsg-cli/src/app.rs`): owns the terminal, the peer table, scrollbacks and the SAS queue. One `select!` multiplexes key events, the bounded `NetEvent` channel, a 250 ms tick and termination signals.
+- **Net layer** (`crates/ruxmsg-net/src/lib.rs`): one task per connection owns its `Engine`; one task per listener accepts and applies the cap of four unauthenticated handshakes. Commands go in through bounded channels; events come out through one bounded channel.
+- **Modes:** the REPL (raw mode, prompt redrawn under asynchronous output) and one conversation at a time in the alternate screen. SAS is typed (`yes` + Enter) in either.
+- **Blocking work** (keyring access, `tailscale` commands) runs on the blocking pool.
+
+Session lifetime equals connection lifetime: when a connection task ends, its `Closed` event removes the entry and its scrollback is zeroized.
+
+### Cancellation in the net layer
+
+The `select!` in a connection task has only cancel-safe branches: a `read` into a scratch buffer, two channel receives and a sleep. A partial frame lives in `FrameDecoder` across iterations. Writes are awaited outside the `select!` under a 15 s timeout; an error or timeout is treated as a lost connection because part of a frame may be on the wire. Bounds: message queue 64, control queue 8, event queue 256, decoder buffer one frame plus one read chunk, SAS queue 4, unauthenticated handshakes 4.
 
 ## State and persistence boundary
 
@@ -109,4 +150,4 @@ A process exit or transport loss destroys the session. Reconnecting always means
 
 ## Known gaps against spec 1.1
 
-Key material hygiene (initial directional keys retained in `ManagedSession`, chain keys not zeroized), display sanitization, timeouts and caps are open items; see the [conformance matrix](conformance-matrix.md).
+Published known-answer vectors, recorded fuzzing runs, memory locking, and automated tests for zeroization and the exit wipe are open items; see the [conformance matrix](conformance-matrix.md).

@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use ruxmsg::handshake::{HandshakePayload, HelloPayload, SessionConfirmPayload};
+use ruxmsg::handshake::{CommitPayload, HandshakePayload, HelloPayload, SessionConfirmPayload};
 use ruxmsg::protocol::MessageType;
 use ruxmsg::wire::Frame;
 
@@ -15,6 +15,7 @@ fuzz_target!(|data: (u8, Vec<u8>)| {
         _ => MessageType::Close,
     };
     if let Ok(frame) = Frame::new(message_type, payload) {
+        let _ = CommitPayload::decode(&frame);
         let _ = HelloPayload::decode(&frame);
         let _ = HandshakePayload::decode(&frame);
         let _ = SessionConfirmPayload::decode(&frame);

@@ -4,29 +4,28 @@ RUXMSG is a security-sensitive Rust protocol implementation. Small changes can a
 
 ## Repository layout
 
-- `src/`: library modules and the `ruxmsg` binary (`src/bin/ruxmsg.rs`)
-- `tests/`: integration and conformance tests
+- `crates/ruxmsg-core/`: protocol core (sans-IO engine, wire, crypto); tests in `tests/`
+- `crates/ruxmsg-net/`: Tokio driver; tests in `tests/`
+- `crates/ruxmsg-cli/`: the `ruxmsg` binary, config loader and keyring adapter; tests in `tests/`
 - `fuzz/`: fuzz crate and targets
-- `docs/protocol-spec.md`: normative specification
-- `docs/protocol-reference.md`: implementation-facing wire reference
+- `docs/protocol-spec.md`: normative specification, including the decision log (Appendix B)
 - `docs/conformance-matrix.md`: implementation and test status
-- `docs/decisions.md`: closed decisions and rationale
-- `docs/test-vectors.md`: hex known-answer vectors (planned; see below)
+- `docs/architecture.md`, `docs/library.md`, `docs/cli.md`, `docs/security-model.md`: explanatory guides
 
 ## Toolchain and checks
 
-`Cargo.toml` declares Rust 1.88 and edition 2024 (the fuzz crate uses edition 2021). On Linux you need `pkg-config` and `libdbus-1-dev` for the credential store. CI runs, in order:
+The workspace `Cargo.toml` declares Rust 1.88 and edition 2024 (the fuzz crate uses edition 2021). On Linux you need `pkg-config` and `libdbus-1-dev` for the credential store. CI runs, in order:
 
 ```text
 cargo fmt --all -- --check
-cargo check --all-targets
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
 ```
 
 Also build rustdoc before opening a change. Documentation examples must match the public API and the CLI source.
 
-The crate forbids unsafe Rust and denies Clippy's `all` and `correctness` groups. Do not weaken these settings to make a change pass.
+The workspace forbids unsafe Rust and denies Clippy's `all` and `correctness` groups. Do not weaken these settings to make a change pass.
 
 ## Scope
 
@@ -36,16 +35,14 @@ RUXMSG/1 is volatile two-party messaging. Do not add groups, anonymity features,
 
 Use focused tests while developing, then run the full suite. Existing coverage includes:
 
-- transcript, SAS, nonce, padding, replay and frame-limit checks in `tests/conformance.rs`;
-- two-peer handshake in `tests/handshake.rs`;
-- interleaved DATA and rekey in `tests/connection.rs`;
-- session replacement and drain in `tests/rekey.rs`;
-- restart behavior in `tests/restart.rs`;
-- framed transport and split reader/writer in `tests/transport.rs` and `tests/tcp_split.rs`.
+- transcript, SAS, nonce, padding, replay and frame-limit checks in `crates/ruxmsg-core/tests/conformance.rs` and `limits.rs`;
+- the engine, driven by a two-node simulator with a virtual clock, in `crates/ruxmsg-core/tests/engine.rs`: handshake ordering and replay, every timeout, rekey, glare, CLOSE rules and bounded output;
+- the Tokio driver over pipes and loopback TCP in `crates/ruxmsg-net/tests/net.rs`: partial and stalled writes, queue bounds, the handshake cap, timeouts under paused time;
+- the config loader in `crates/ruxmsg-cli/tests/config.rs`.
 
-Blocking two-peer tests must start the peer thread before invoking the blocking handshake on the main thread, or each side waits forever.
+Engine tests must never block: the simulator's peer returns `TransportClosed` when its script runs out, so a missing frame fails fast instead of hanging.
 
-**Known-answer vectors.** Spec §12.1 requires fixed hex vectors for every derived value. Current tests mostly assert properties. New cryptographic code must add hex vectors, ideally cross-checked against an independent implementation, and record them in `docs/test-vectors.md`.
+**Known-answer vectors.** Spec §12.1 requires fixed hex vectors for every derived value. Current tests mostly assert properties. New cryptographic code must add hex vectors, ideally cross-checked against an independent implementation, and keep them beside the tests that use them.
 
 New security behavior needs tests for both the accepting and rejecting paths: for example, a commitment that does not match, AUTH fields that differ from the local transcript, a rekey from a different identity, and a failed authentication that must not consume a message key.
 
@@ -53,19 +50,18 @@ New security behavior needs tests for both the accepting and rejecting paths: fo
 
 Do not change a wire value, field, length rule, canonical encoding rule, cryptographic domain, rejection rule, limit or lifecycle invariant without first updating the specification and recording the decision.
 
-1. update `docs/protocol-spec.md` (and its Appendix B);
-2. add the decision to `docs/decisions.md`;
-3. update `docs/protocol-reference.md`;
-4. update the conformance matrix and known-answer vectors;
-5. update the implementation and tests;
-6. consider backward compatibility and rejection behavior;
-7. document the security and interoperability impact.
+1. update `docs/protocol-spec.md` and record the decision in its Appendix B;
+2. update the conformance matrix and known-answer vectors;
+3. update the implementation and tests;
+4. update the explanatory guides that describe the behavior;
+5. consider backward compatibility and rejection behavior;
+6. document the security and interoperability impact.
 
 The specification is authoritative. Explanatory documents must link to it rather than redefine it.
 
 ## Fuzzing
 
-Fuzz targets live in `fuzz/fuzz_targets/` and cover CLOSE decoding, DATA decryption, CBOR payloads, frame decoding, handshake decoding, and session lifecycle. `fuzz/corpus/` and `fuzz/artifacts/` are git-ignored, so corpora are local. Run fuzzing with the fuzz crate tooling and record meaningful findings in the change description. Add targets for COMMIT and AUTH decoding and the rekey state machine when those change.
+Fuzz targets live in `fuzz/fuzz_targets/` (a separate workspace) and cover CLOSE decoding, DATA decryption, CBOR payloads, frame decoding, handshake decoding including COMMIT, the receiving ratchet, arbitrary engine input sequences, and the config parser. `fuzz/corpus/` and `fuzz/artifacts/` are git-ignored, so corpora are local. Run fuzzing with `cargo fuzz` from `fuzz/` (it needs a nightly toolchain) and record meaningful findings in the change description. When you change a decoder, the engine or the config schema, extend or add the matching target.
 
 A target existing does not prove fuzzing was run or that any result was achieved.
 

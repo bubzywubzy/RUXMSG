@@ -1,6 +1,6 @@
 # RUXMSG command-line client
 
-`ruxmsg` is an interactive terminal client for volatile peer-to-peer messaging. It has two frontends that share one set of live sessions: a line-oriented **REPL** for control, and a **chat view** (Ratatui) for conversation. Press Esc in the chat view to return to the REPL; the network session stays alive.
+`ruxmsg` is an interactive terminal client for volatile peer-to-peer messaging. It has two frontends that share one set of live sessions: a line-oriented **REPL** for control, and a **conversation view** (Ratatui) for conversation. Press Esc in the conversation view to return to the REPL; the network session stays alive. The client is a single-threaded Tokio program over the sans-IO engine.
 
 Nothing about your peers, sessions, or messages is saved. The only persistent item is your identity seed.
 
@@ -9,9 +9,10 @@ Nothing about your peers, sessions, or messages is saved. The only persistent it
 ```text
 ruxmsg                      # start with no identity loaded
 ruxmsg --profile alice      # load an existing profile at startup
+ruxmsg --config ./my.toml   # read configuration from another file
 ```
 
-If `--profile` names a profile that does not exist, the client says so; create it with `profile init alice`.
+If `--profile` names a profile that does not exist, the client says so; create it with `profile init alice`. Switching profiles with `profile use` or `profile init` is refused while sessions or a listener exist; close them first.
 
 ## Profiles and identity
 
@@ -39,7 +40,7 @@ IDENTITY
   fingerprint [label]       show own or peer fingerprint
 
 NETWORK
-  start [--addr <addr>]     accept connections (default 0.0.0.0:4443)
+  start [--addr <addr>]     accept connections (default 127.0.0.1:4443, loopback only)
   stop                      stop accepting new connections
   connect <addr>            connect to a peer
 
@@ -50,7 +51,8 @@ SESSIONS
   close <label>             close a session
 
 MESSAGING
-  chat [label]              open the chat view
+  rekey <label>             start a rekey now
+  chat [label]              open the conversation view
   msg <label> <text>        send a message
   <text>                    send to the default target (any unrecognised input)
 
@@ -61,6 +63,8 @@ GENERAL
   help, quit
 ```
 
+`start` listens on loopback by default and warns if you bind every interface. `connect` returns immediately and reports success or failure as an event. Ctrl-C or Ctrl-D in the REPL quits.
+
 Each connection gets a label (`peer1`, `peer2`, ...). You can hold several connections at once; each is an independent two-party session.
 
 Any input that is not a recognised command is sent as a message to the default target, so a mistyped command can be sent to your peer. Use `msg <label> <text>` when in doubt.
@@ -69,18 +73,29 @@ Any input that is not a recognised command is sent as a message to the default t
 
 Every connection, first or hundredth, requires SAS approval from both people. RUXMSG remembers no one.
 
-1. Both peers see: `SECURITY VERIFICATION` followed by three words.
+1. Both peers see: `SECURITY VERIFICATION` followed by three words, the connection's direction and the peer's full fingerprint.
 2. Compare the words over an **independent** channel. Do not use the RUXMSG connection, and do not treat a matching IP address, hostname, or Tailscale name as verification.
 3. If the words match exactly, approve. If not, reject and investigate.
 4. Also check the peer's fingerprint against one you already know, if you have one.
 
 A rejection, timeout, or mismatch aborts the connection and destroys all candidate state.
 
-> **Planned (spec 1.1):** approval will require typing `yes` and Enter, will show the peer fingerprint alongside the words, and will time out. Currently a single `y` keypress approves and any other key rejects, so avoid typing while a connection request is pending.
+The prompt shows the words, the peer's full fingerprint (claimed until you approve) and a 120 s countdown. Approval requires typing `yes` and pressing Enter; a single key, any other text, Esc, or the timeout rejects. The same prompt appears as a modal inside the conversation view, labelled with the connection it belongs to, and requests queue (at most four).
 
-## Chat view
+## Conversation view
 
-`chat` (or `chat <label>`) opens the chat view for a connected session. Enter sends, Up/Down/PageUp/PageDown scroll, Esc returns to the REPL. Incoming messages for other sessions are not shown in the chat view. A SAS request for the chat's own session is displayed there but must be approved from the REPL.
+`chat` (or `chat <label>`) opens the conversation view for a connected session. One conversation is open at a time; Esc returns to the REPL, where `use`, `chat` and `connect` switch conversations. The header shows the state (ACTIVE, rekeying, CLOSED) and the peer's full fingerprint.
+
+| Key | Action |
+| --- | --- |
+| Enter | send |
+| Esc, Ctrl-C | back to the REPL |
+| Ctrl-R | rekey this session |
+| Up, Down, PageUp, PageDown | scroll |
+
+Messages for other sessions are kept (in memory) and announced in the status bar as `peerN +count`, never shown. Peer text is escaped before display, so control and bidirectional characters appear as `\u{..}` rather than acting on your terminal.
+
+Scrollback is bounded (1,000 entries, 256 KiB per conversation), lives only in RAM, and is zeroized when the session closes, the conversation is left after a close, or the program exits. On exit the screen and its scrollback are cleared. Core dumps are disabled where the OS allows it. Nothing can protect against a live local compromise, `SIGKILL`, swap, or your terminal emulator's own memory.
 
 ## Sessions are tied to connections
 
@@ -91,6 +106,37 @@ A session lives exactly as long as its TCP connection. If the connection drops, 
 ## Tailscale
 
 Tailscale provides reachability only. `tailscale status` reports whether it is running or needs login, `tailscale up` starts it, and `tailscale ip` prints your tailnet addresses. Use those addresses with `start --addr` and `connect`. If `tailscale` is not on `PATH` the client says how to install it.
+
+## Configuration
+
+Appearance and key bindings can be set in one global file, read once at startup and never written by the app. It is not tied to any profile. The default location is `$XDG_CONFIG_HOME/ruxmsg/config.toml` (else `~/.config/ruxmsg/config.toml`); `--config <path>` reads another file. A missing file means defaults.
+
+```toml
+[theme]            # named colours or #rrggbb
+border = "dark-gray"
+accent = "#ff8800"
+local = "green"
+remote = "yellow"
+system = "magenta"
+warning = "red"
+dim = "gray"
+
+[keys]             # names, f1-f12, or ctrl-/alt- plus a letter
+leave = "esc"
+rekey = "ctrl-r"
+scroll_up = "up"
+scroll_down = "down"
+page_up = "pageup"
+page_down = "pagedown"
+
+[ui]
+border = "rounded"   # plain, rounded, double, thick
+tick_ms = 250        # 100 to 1000
+```
+
+The loader is strict because it is the one input read from a user-writable place. The file must be a regular file you own that group and others cannot write, and not a symlink. It is capped at 16 KiB and must be UTF-8. Unknown tables, fields and wrong types are rejected, and nothing in it is expanded, included or executed. Errors name a kind and a line number but never quote the file. On any error the client prints one warning and uses the defaults.
+
+Some keys cannot be rebound: Enter, Backspace, typing, Ctrl-C, Ctrl-D, and everything in the SAS prompt. A plain letter cannot be bound, and no key may be bound to two actions.
 
 ## Troubleshooting
 
@@ -106,13 +152,10 @@ Tailscale provides reachability only. `tailscale status` reports whether it is r
 
 ## Known limitations (RUXMSG/1 in progress)
 
-Tracked in the [conformance matrix](conformance-matrix.md); each is a spec 1.1 requirement not yet implemented:
+Tracked in the [conformance matrix](conformance-matrix.md):
 
-- typed SAS approval and timeouts;
-- terminal-output sanitization of peer text (a peer can currently send control characters);
-- automatic rekey and peer-initiated rekey handling;
-- handshake timeouts and a cap on concurrent unauthenticated handshakes;
-- loopback or tailnet default for `start`;
-- SAS approval from inside the chat view.
+- memory locking is not done, so secrets can reach swap;
+- zeroization and the exit wipe are implemented but not asserted by automated tests;
+- the REPL and the SAS modal have no automated UI tests.
 
 See the [security model](security-model.md), [architecture](architecture.md), and [specification](protocol-spec.md) for details.

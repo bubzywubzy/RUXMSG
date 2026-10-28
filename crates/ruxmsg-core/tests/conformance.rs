@@ -1,25 +1,25 @@
 use bip39::Language;
 use sha2::{Digest, Sha256};
 
-use ruxmsg::crypto::{
+use ruxmsg_core::crypto::{
     confirmation_mac, derive_message_key, derive_session_keys, message_nonce, sas_indices,
     sas_words, transcript_hash, verify_confirmation, verify_transcript_signature, EphemeralKeypair,
     IdentityKeypair,
 };
-use ruxmsg::data::{DataPlaintext, DataReceiver, DataSender};
-use ruxmsg::encoding::Transcript;
-use ruxmsg::error::Error;
-use ruxmsg::handshake::{
+use ruxmsg_core::data::{DataPlaintext, DataReceiver, DataSender};
+use ruxmsg_core::encoding::Transcript;
+use ruxmsg_core::error::Error;
+use ruxmsg_core::handshake::{
     transcript_from_hellos, verify_handshake, HandshakePayload, HandshakePurpose, HandshakeType,
     HelloPayload, HelloRole, SessionConfirmPayload,
 };
-use ruxmsg::identity::PeerIdentity;
-use ruxmsg::protocol::{
+use ruxmsg_core::identity::PeerIdentity;
+use ruxmsg_core::protocol::{
     DirectionId, FrameLength, MessageType, ProtocolVersion, SessionId, DEFAULT_PADDING_QUANTUM,
     MAX_FRAME_SIZE,
 };
-use ruxmsg::ratchet::{ReceivingChain, ReplayStatus, ReplayWindow};
-use ruxmsg::wire::Frame;
+use ruxmsg_core::ratchet::{ReceivingChain, ReplayStatus, ReplayWindow};
+use ruxmsg_core::wire::Frame;
 
 #[test]
 fn bip39_wordlist_matches_pinned_protocol_artifact() {
@@ -607,7 +607,7 @@ fn session_confirmation_binds_confirmation_to_session() {
     let decoded = SessionConfirmPayload::decode(&frame).unwrap();
     assert_eq!(decoded, payload);
 
-    let keys = ruxmsg::crypto::SessionKeys {
+    let keys = ruxmsg_core::crypto::SessionKeys {
         root_key: [0; 32],
         initiator_to_responder: [0; 32],
         responder_to_initiator: [0; 32],
@@ -618,7 +618,7 @@ fn session_confirmation_binds_confirmation_to_session() {
     assert!(decoded.verify(&keys, &hash).is_ok());
 
     // A valid MAC from another session must not authenticate this session.
-    let wrong_session = ruxmsg::crypto::SessionKeys {
+    let wrong_session = ruxmsg_core::crypto::SessionKeys {
         root_key: [0; 32],
         initiator_to_responder: [0; 32],
         responder_to_initiator: [0; 32],
@@ -890,7 +890,7 @@ fn successful_decryption_commits_key_and_rejects_replay() {
 
 #[test]
 fn close_reason_registry_and_detail_limit_are_enforced() {
-    use ruxmsg::close::{ClosePayload, CloseReason};
+    use ruxmsg_core::close::{ClosePayload, CloseReason};
 
     let reasons = [
         (0, CloseReason::Normal),
