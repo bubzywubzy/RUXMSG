@@ -28,7 +28,10 @@ mod tests {
         assert_eq!(sanitize_for_display("a\x1b[2Jb"), "a\\u{001b}[2Jb");
         assert_eq!(sanitize_for_display("\u{9b}x"), "\\u{009b}x");
         assert_eq!(sanitize_for_display("\u{202e}evil"), "\\u{202e}evil");
-        assert_eq!(sanitize_for_display("\u{2066}x\u{2069}"), "\\u{2066}x\\u{2069}");
+        assert_eq!(
+            sanitize_for_display("\u{2066}x\u{2069}"),
+            "\\u{2066}x\\u{2069}"
+        );
         assert_eq!(sanitize_for_display("\x07\x00"), "\\u{0007}\\u{0000}");
     }
 

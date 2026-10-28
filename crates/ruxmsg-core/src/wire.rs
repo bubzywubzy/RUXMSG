@@ -64,9 +64,7 @@ impl Frame {
 
     /// Validates version, type and per-type length from the header alone, so
     /// callers can do this before allocating the payload.
-    pub fn parse_header(
-        header: &[u8; HEADER_SIZE],
-    ) -> Result<(ProtocolVersion, MessageType, u32)> {
+    pub fn parse_header(header: &[u8; HEADER_SIZE]) -> Result<(ProtocolVersion, MessageType, u32)> {
         let version = ProtocolVersion::try_from(header[0])?;
         let message_type = MessageType::try_from(header[1])?;
         let declared = u32::from_be_bytes(header[2..6].try_into().expect("four length bytes"));
@@ -79,8 +77,11 @@ impl Frame {
         if input.len() < HEADER_SIZE {
             return Err(Error::TruncatedFrame);
         }
-        let (version, message_type, declared) =
-            Self::parse_header(input[..HEADER_SIZE].try_into().expect("header has six bytes"))?;
+        let (version, message_type, declared) = Self::parse_header(
+            input[..HEADER_SIZE]
+                .try_into()
+                .expect("header has six bytes"),
+        )?;
         let total = HEADER_SIZE
             .checked_add(declared as usize)
             .ok_or(Error::InvalidFrameLength(declared))?;

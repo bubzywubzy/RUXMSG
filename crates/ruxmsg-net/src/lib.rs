@@ -437,10 +437,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Task<S> {
     }
 
     async fn emit(&mut self, event: ConnEvent) {
-        let message = NetEvent::Conn {
-            id: self.id,
-            event,
-        };
+        let message = NetEvent::Conn { id: self.id, event };
 
         if self.events.send(message).await.is_err() {
             self.orphaned = true;

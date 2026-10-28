@@ -142,7 +142,9 @@ impl fmt::Debug for Effect {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
-    Established { peer_identity: PeerIdentity },
+    Established {
+        peer_identity: PeerIdentity,
+    },
     RekeyStarted,
     RekeyCompleted,
     RekeyFailed(RekeyFailure),
@@ -282,7 +284,11 @@ pub struct Engine {
 
 impl Engine {
     /// `role` is the transport role: the dialing side is the initiator.
-    pub fn new(role: HelloRole, identity: IdentityKeypair, entropy: Box<dyn Entropy + Send>) -> Self {
+    pub fn new(
+        role: HelloRole,
+        identity: IdentityKeypair,
+        entropy: Box<dyn Entropy + Send>,
+    ) -> Self {
         Self {
             role,
             identity,
@@ -403,10 +409,7 @@ impl Engine {
             HandshakePurpose::Rekey => true,
             HandshakePurpose::Initial => matches!(
                 step,
-                Step::Hello
-                    | Step::Reveal
-                    | Step::ConfirmResp
-                    | Step::ConfirmInit
+                Step::Hello | Step::Reveal | Step::ConfirmResp | Step::ConfirmInit
             ),
         };
 
@@ -776,7 +779,10 @@ impl Engine {
                 }
 
                 let (keys, hash) = Self::verify_auth(run, &auth)?;
-                let transcript = run.transcript.as_ref().ok_or(Error::InvalidStateTransition)?;
+                let transcript = run
+                    .transcript
+                    .as_ref()
+                    .ok_or(Error::InvalidStateTransition)?;
 
                 let response = HandshakePayload {
                     handshake_type: HandshakeType::try_from(u64::from(transcript.handshake_type))?,
@@ -833,7 +839,10 @@ impl Engine {
     }
 
     fn verify_auth(run: &Run, auth: &HandshakePayload) -> Result<(SessionKeys, [u8; 32])> {
-        let transcript = run.transcript.as_ref().ok_or(Error::InvalidStateTransition)?;
+        let transcript = run
+            .transcript
+            .as_ref()
+            .ok_or(Error::InvalidStateTransition)?;
         let shared = run.shared.as_ref().ok_or(Error::InvalidStateTransition)?;
 
         verify_handshake_for_role(auth, transcript, shared, true)
@@ -891,9 +900,16 @@ impl Engine {
     }
 
     /// SAS approved (initial) or identity continuity established (rekey).
-    fn after_approval(&mut self, run: &mut Run, out: &mut Vec<Effect>) -> Result<Option<Candidate>> {
+    fn after_approval(
+        &mut self,
+        run: &mut Run,
+        out: &mut Vec<Effect>,
+    ) -> Result<Option<Candidate>> {
         let hash = run.hash.ok_or(Error::InvalidStateTransition)?;
-        let transcript = run.transcript.as_ref().ok_or(Error::InvalidStateTransition)?;
+        let transcript = run
+            .transcript
+            .as_ref()
+            .ok_or(Error::InvalidStateTransition)?;
 
         match run.role {
             HelloRole::Initiator => {
@@ -933,10 +949,7 @@ impl Engine {
     // ------------------------------------------------------------------ SAS
 
     fn on_sas(&mut self, approved: bool, out: &mut Vec<Effect>) {
-        let waiting = self
-            .run
-            .as_ref()
-            .is_some_and(|run| run.step == Step::Sas);
+        let waiting = self.run.as_ref().is_some_and(|run| run.step == Step::Sas);
 
         if self.phase != Phase::Handshaking || !waiting {
             return;
@@ -971,7 +984,11 @@ impl Engine {
         self.cancel(DeadlineKind::SasDecision, out);
         self.cancel(DeadlineKind::HandshakeTotal, out);
 
-        self.active = Some(Session::new(&candidate.keys, candidate.role, candidate.peer));
+        self.active = Some(Session::new(
+            &candidate.keys,
+            candidate.role,
+            candidate.peer,
+        ));
         self.phase = Phase::Established;
         self.messages = 0;
 
@@ -1088,10 +1105,12 @@ impl Engine {
     }
 
     fn on_incoming_commit(&mut self, commit: CommitPayload, out: &mut Vec<Effect>) {
-        let references_active =
-            commit.previous_session_id.is_some() && commit.previous_session_id == self.active_session_id();
+        let references_active = commit.previous_session_id.is_some()
+            && commit.previous_session_id == self.active_session_id();
 
-        if commit.cipher_suite != 1 || commit.purpose != HandshakePurpose::Rekey || !references_active
+        if commit.cipher_suite != 1
+            || commit.purpose != HandshakePurpose::Rekey
+            || !references_active
         {
             out.push(Effect::Notify(Event::RekeyFailed(RekeyFailure::Rejected)));
             return;
@@ -1174,8 +1193,14 @@ impl Engine {
             return;
         }
 
-        let Some(active) = self.active.as_mut().filter(|_| self.phase == Phase::Established) else {
-            out.push(Effect::Notify(Event::SendRejected(SendRejection::NotActive)));
+        let Some(active) = self
+            .active
+            .as_mut()
+            .filter(|_| self.phase == Phase::Established)
+        else {
+            out.push(Effect::Notify(Event::SendRejected(
+                SendRejection::NotActive,
+            )));
             return;
         };
 

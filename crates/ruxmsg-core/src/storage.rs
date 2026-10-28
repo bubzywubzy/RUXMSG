@@ -67,12 +67,10 @@ impl<S: SecretStore> IdentityKeyStore<S> {
             return Ok(None);
         };
 
-        let seed: Zeroizing<[u8; 32]> = Zeroizing::new(
-            bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| Error::Storage("stored identity seed has the wrong length".to_string()))?,
-        );
+        let seed: Zeroizing<[u8; 32]> =
+            Zeroizing::new(bytes.as_slice().try_into().map_err(|_| {
+                Error::Storage("stored identity seed has the wrong length".to_string())
+            })?);
 
         Ok(Some(IdentityKeypair::from_bytes(&seed)))
     }

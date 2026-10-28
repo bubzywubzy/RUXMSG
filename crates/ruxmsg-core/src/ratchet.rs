@@ -135,7 +135,7 @@ impl ReceivingChain {
 
         // Validate the entire requested derivation range before mutating the chain.
         // Because next_counter must advance to `counter + 1` after deriving the target key,
-        // `counter` cannot be u64::MAX. This single check protects both the skipped loop 
+        // `counter` cannot be u64::MAX. This single check protects both the skipped loop
         // and the target key derivation from overflowing.
         if counter == u64::MAX {
             return Err(Error::CounterOverflow);
@@ -143,7 +143,8 @@ impl ReceivingChain {
 
         let gap = counter - self.next_counter;
 
-        if gap > u64::from(MAX_SKIPPED_KEYS) || self.skipped.len() >= usize::from(MAX_SKIPPED_KEYS) {
+        if gap > u64::from(MAX_SKIPPED_KEYS) || self.skipped.len() >= usize::from(MAX_SKIPPED_KEYS)
+        {
             return Err(Error::SkippedKeyLimit);
         }
 
