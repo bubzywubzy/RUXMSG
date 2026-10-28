@@ -1,3 +1,4 @@
+
 [CmdletBinding()]
 param(
     [ValidateSet('binary', 'all', 'help')]
@@ -11,12 +12,17 @@ $ErrorActionPreference = 'Stop'
 
 $AppName = 'RUXMSG'
 $BinaryName = 'ruxmsg.exe'
+$TrimChars = [char[]]@('\', '/')
 
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     if (-not [string]::IsNullOrWhiteSpace($env:RUXMSG_INSTALL_DIR)) {
         $InstallDir = $env:RUXMSG_INSTALL_DIR
     }
     else {
+        if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+            throw 'LOCALAPPDATA is not set. Specify -InstallDir explicitly.'
+        }
+
         $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\RUXMSG'
     }
 }
@@ -24,35 +30,39 @@ if ([string]::IsNullOrWhiteSpace($InstallDir)) {
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 $Destination = Join-Path $InstallDir $BinaryName
 
-# Match the application's config.rs path resolution:
-# absolute XDG_CONFIG_HOME, otherwise HOME/.config.
+# Match config.rs path resolution:
+# Use an absolute XDG_CONFIG_HOME, otherwise HOME/.config.
 if (-not [string]::IsNullOrWhiteSpace($env:XDG_CONFIG_HOME) -and
     [System.IO.Path]::IsPathRooted($env:XDG_CONFIG_HOME)) {
-    $ConfigDir = Join-Path $env:XDG_CONFIG_HOME 'ruxmsg'
+    $ConfigBase = [System.IO.Path]::GetFullPath($env:XDG_CONFIG_HOME)
 }
 else {
-    $ConfigDir = Join-Path $HOME '.config\ruxmsg'
+    $ConfigBase = [System.IO.Path]::GetFullPath(
+        (Join-Path $HOME '.config')
+    )
 }
 
-# ---------- Presentation ----------
+$ConfigDir = [System.IO.Path]::GetFullPath(
+    (Join-Path $ConfigBase 'ruxmsg')
+)
 
 function Write-Info {
-    param([string]$Message)
+    param([Parameter(Mandatory)][string]$Message)
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
 function Write-Success {
-    param([string]$Message)
+    param([Parameter(Mandatory)][string]$Message)
     Write-Host "[OK] $Message" -ForegroundColor Green
 }
 
 function Write-Warn {
-    param([string]$Message)
+    param([Parameter(Mandatory)][string]$Message)
     Write-Warning $Message
 }
 
 function Stop-Uninstall {
-    param([string]$Message)
+    param([Parameter(Mandatory)][string]$Message)
     throw $Message
 }
 
@@ -63,14 +73,12 @@ function Write-Banner {
     Write-Host '██████╔╝ ██║   ██║  ╚███╔╝  ██╔████╔██║ ███████╗ ██║  ███╗' -ForegroundColor Cyan
     Write-Host '██╔══██╗ ██║   ██║  ██╔██╗  ██║╚██╔╝██║ ╚════██║ ██║   ██║' -ForegroundColor Cyan
     Write-Host '██║  ██║ ╚██████╔╝ ██╔╝ ██╗ ██║ ╚═╝ ██║ ███████║ ╚██████╔╝' -ForegroundColor Cyan
-    Write-Host '╚═╝  ╚═╝  ╚═════╝  ╚═╝  ╚═╝ ╚═╝     ╚═╝ ╚══════╝  ╚═════╝' -ForegroundColor Cyan
+    Write-Host '╚═╝  ╚═╝  ╚═════╝  ╚═╝  ╚═╝ ╚═╝     ╚═╝ ╚══════╝  ══════╝' -ForegroundColor Cyan
     Write-Host ''
     Write-Host '  Encrypted peer-to-peer messaging' -ForegroundColor DarkGray
     Write-Host '  Windows removal utility' -ForegroundColor DarkGray
     Write-Host ''
 }
-
-# ---------- Validation ----------
 
 function Test-SafeTarget {
     param([Parameter(Mandatory)][string]$Path)
@@ -79,8 +87,8 @@ function Test-SafeTarget {
     $Root = [System.IO.Path]::GetPathRoot($FullPath)
 
     if ([string]::Equals(
-        $FullPath.TrimEnd('\', '/'),
-        $Root.TrimEnd('\', '/'),
+        $FullPath.TrimEnd($TrimChars),
+        $Root.TrimEnd($TrimChars),
         [System.StringComparison]::OrdinalIgnoreCase
     )) {
         Stop-Uninstall "Refusing to remove a filesystem root: $FullPath"
@@ -93,8 +101,8 @@ function Test-SafeTarget {
             Stop-Uninstall "Refusing to remove a symbolic link or reparse point: $FullPath"
         }
 
-        if (-not ($Item -is [System.IO.FileInfo]) -and
-            -not ($Item -is [System.IO.DirectoryInfo])) {
+        if ($Item -isnot [System.IO.FileInfo] -and
+            $Item -isnot [System.IO.DirectoryInfo]) {
             Stop-Uninstall "Refusing unexpected filesystem object: $FullPath"
         }
     }
@@ -123,7 +131,6 @@ function Confirm-Removal {
     param([Parameter(Mandatory)][string]$Prompt)
 
     $Answer = Read-Host $Prompt
-
     return $Answer -match '^(?i:y|yes)$'
 }
 
@@ -151,8 +158,6 @@ Notes:
 '@ | Write-Host
 }
 
-# ---------- Main ----------
-
 try {
     if ($Mode -eq 'help') {
         Show-Help
@@ -164,32 +169,33 @@ try {
     Write-Info "Removal mode: $Mode"
     Write-Host "  Executable: $Destination"
 
+    # Validate the executable path before requesting confirmation.
     Test-SafeTarget -Path $Destination
 
     $Targets = @($Destination)
 
     if ($Mode -eq 'all') {
-        # Never permit a broad parent directory as the config target.
         $ConfigFull = [System.IO.Path]::GetFullPath($ConfigDir)
         $HomeFull = [System.IO.Path]::GetFullPath($HOME)
         $ConfigRoot = [System.IO.Path]::GetPathRoot($ConfigFull)
 
         if ([string]::Equals(
-            $ConfigFull.TrimEnd('\', '/'),
-            $ConfigRoot.TrimEnd('\', '/'),
+            $ConfigFull.TrimEnd($TrimChars),
+            $ConfigRoot.TrimEnd($TrimChars),
             [System.StringComparison]::OrdinalIgnoreCase
         )) {
             Stop-Uninstall "Refusing unsafe configuration directory: $ConfigFull"
         }
 
         if ([string]::Equals(
-            $ConfigFull.TrimEnd('\', '/'),
-            $HomeFull.TrimEnd('\', '/'),
+            $ConfigFull.TrimEnd($TrimChars),
+            $HomeFull.TrimEnd($TrimChars),
             [System.StringComparison]::OrdinalIgnoreCase
         )) {
             Stop-Uninstall "Refusing to remove the home directory: $ConfigFull"
         }
 
+        # Refuse known broad or sensitive directories.
         $Forbidden = @(
             (Join-Path $HOME '.config'),
             (Join-Path $HOME '.local'),
@@ -200,18 +206,35 @@ try {
             $env:WINDIR,
             $env:ProgramFiles,
             ${env:ProgramFiles(x86)}
-        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        ) | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        }
 
-        foreach ($Path in $Forbidden) {
-            $ForbiddenFull = [System.IO.Path]::GetFullPath($Path)
+        foreach ($ForbiddenPath in $Forbidden) {
+            $ForbiddenFull = [System.IO.Path]::GetFullPath(
+                $ForbiddenPath
+            )
 
             if ([string]::Equals(
-                $ConfigFull.TrimEnd('\', '/'),
-                $ForbiddenFull.TrimEnd('\', '/'),
+                $ConfigFull.TrimEnd($TrimChars),
+                $ForbiddenFull.TrimEnd($TrimChars),
                 [System.StringComparison]::OrdinalIgnoreCase
             )) {
                 Stop-Uninstall "Refusing broad or sensitive configuration target: $ConfigFull"
             }
+        }
+
+        # Reconstruct and verify the exact expected config path.
+        $ExpectedConfigTarget = [System.IO.Path]::GetFullPath(
+            (Join-Path $ConfigBase 'ruxmsg')
+        )
+
+        if (-not [string]::Equals(
+            $ConfigFull.TrimEnd($TrimChars),
+            $ExpectedConfigTarget.TrimEnd($TrimChars),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            Stop-Uninstall "Configuration path did not pass validation: $ConfigFull"
         }
 
         Test-SafeTarget -Path $ConfigFull
@@ -219,6 +242,7 @@ try {
 
         Write-Host ''
         Write-Host 'FULL REMOVAL TARGETS' -ForegroundColor Yellow
+
         foreach ($Target in $Targets) {
             Write-Host "  - $Target"
         }
