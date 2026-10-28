@@ -6,7 +6,7 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 use ruxmsg_core::close::{ClosePayload, CloseReason};
-use ruxmsg_core::crypto::{commit_hash, IdentityKeypair};
+use ruxmsg_core::crypto::{IdentityKeypair, commit_hash};
 use ruxmsg_core::handshake::{CommitPayload, HandshakePurpose, HelloPayload, HelloRole};
 use ruxmsg_core::machine::{
     CloseCause, DeadlineId, DeadlineKind, Effect, Engine, EngineState, Entropy, Event, Input,
@@ -87,7 +87,11 @@ impl Sim {
     fn input(&mut self, side: usize, input: Input) {
         let effects = self.nodes[side].engine.handle(input);
 
-        assert!(effects.len() <= 12, "one input produced {} effects", effects.len());
+        assert!(
+            effects.len() <= 12,
+            "one input produced {} effects",
+            effects.len()
+        );
 
         self.apply(side, effects);
     }
@@ -108,7 +112,9 @@ impl Sim {
                     }
                 }
                 Effect::SetDeadline { id, kind, after } => {
-                    self.nodes[side].deadlines.insert(id, (self.now + after, kind));
+                    self.nodes[side]
+                        .deadlines
+                        .insert(id, (self.now + after, kind));
                 }
                 Effect::CancelDeadline(id) => {
                     self.nodes[side].deadlines.remove(&id);
@@ -205,10 +211,13 @@ impl Sim {
     }
 
     fn closed(&self, side: usize) -> Option<CloseCause> {
-        self.nodes[side].events.iter().find_map(|event| match event {
-            Event::Closed(cause) => Some(*cause),
-            _ => None,
-        })
+        self.nodes[side]
+            .events
+            .iter()
+            .find_map(|event| match event {
+                Event::Closed(cause) => Some(*cause),
+                _ => None,
+            })
     }
 
     fn count(&self, side: usize, wanted: Event) -> usize {
@@ -247,10 +256,12 @@ fn handshake_deadlines_are_all_cancelled_once_established() {
     // Only the 24 h rekey trigger remains armed.
     assert_eq!(sim.nodes[0].engine.armed_deadlines(), 1);
     assert_eq!(sim.nodes[1].engine.armed_deadlines(), 1);
-    assert!(sim.nodes[0]
-        .deadlines
-        .values()
-        .all(|(_, kind)| *kind == DeadlineKind::RekeyDue));
+    assert!(
+        sim.nodes[0]
+            .deadlines
+            .values()
+            .all(|(_, kind)| *kind == DeadlineKind::RekeyDue)
+    );
 }
 
 #[test]
@@ -339,9 +350,11 @@ fn responder_closes_on_a_first_frame_that_is_not_a_commit() {
         let effects = engine.handle(Input::FrameReceived(first));
 
         assert_eq!(engine.state(), EngineState::Closed);
-        assert!(effects
-            .iter()
-            .any(|effect| matches!(effect, Effect::CloseTransport)));
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::CloseTransport))
+        );
         assert!(
             !effects.iter().any(|effect| matches!(
                 effect,
@@ -377,12 +390,19 @@ fn responder_rejects_a_reveal_that_does_not_match_the_commitment() {
     engine.handle(Input::Start);
 
     let reply = engine.handle(Input::FrameReceived(commit));
-    assert!(reply.iter().any(|e| matches!(e, Effect::Send(_))), "HELLO sent");
+    assert!(
+        reply.iter().any(|e| matches!(e, Effect::Send(_))),
+        "HELLO sent"
+    );
 
     let effects = engine.handle(Input::FrameReceived(other.encode().unwrap()));
 
     assert_eq!(engine.state(), EngineState::Closed);
-    assert!(!effects.iter().any(|e| matches!(e, Effect::RequestSas { .. })));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::RequestSas { .. }))
+    );
 }
 
 #[test]
@@ -491,7 +511,11 @@ fn responder_closes_on_reveals_that_break_the_hello_rules() {
         let effects = engine.handle(Input::FrameReceived(reveal.encode().unwrap()));
 
         assert_eq!(engine.state(), EngineState::Closed);
-        assert!(!effects.iter().any(|e| matches!(e, Effect::RequestSas { .. })));
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::RequestSas { .. }))
+        );
     }
 }
 
@@ -506,7 +530,11 @@ fn responder_closes_on_a_commit_with_the_wrong_purpose() {
     let effects = engine.handle(Input::FrameReceived(commit_for(&rekey_hello)));
 
     assert_eq!(engine.state(), EngineState::Closed);
-    assert_eq!(sent_handshake_frames(&effects), 0, "no HELLO for a bad COMMIT");
+    assert_eq!(
+        sent_handshake_frames(&effects),
+        0,
+        "no HELLO for a bad COMMIT"
+    );
 }
 
 #[test]
@@ -537,8 +565,16 @@ fn initiator_never_reveals_to_an_invalid_responder_hello() {
         let effects = engine.handle(Input::FrameReceived(reply));
 
         assert_eq!(engine.state(), EngineState::Closed);
-        assert_eq!(sent_handshake_frames(&effects), 0, "HELLO must stay unrevealed");
-        assert!(!effects.iter().any(|e| matches!(e, Effect::RequestSas { .. })));
+        assert_eq!(
+            sent_handshake_frames(&effects),
+            0,
+            "HELLO must stay unrevealed"
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::RequestSas { .. }))
+        );
     }
 }
 
@@ -600,7 +636,11 @@ fn total_handshake_deadline_is_180_seconds() {
     // frame deadline must not fire while the peer may be deciding.
     sim.advance(secs(179));
     assert_eq!(sim.nodes[0].engine.state(), EngineState::Handshaking);
-    assert_eq!(sim.closed(1), Some(CloseCause::Timeout), "responder SAS expired");
+    assert_eq!(
+        sim.closed(1),
+        Some(CloseCause::Timeout),
+        "responder SAS expired"
+    );
 
     sim.advance(secs(1));
     assert_eq!(sim.closed(0), Some(CloseCause::Timeout));
@@ -762,8 +802,7 @@ fn greater_identity_key_stays_initiator_in_glare() {
         .iter()
         .filter(|frame| {
             frame.message_type == MessageType::Rekey
-                && HelloPayload::decode(frame)
-                    .is_ok_and(|hello| hello.role == HelloRole::Responder)
+                && HelloPayload::decode(frame).is_ok_and(|hello| hello.role == HelloRole::Responder)
         })
         .count();
 
@@ -789,7 +828,12 @@ fn rekey_with_the_wrong_previous_session_is_discarded_and_the_session_survives()
 
     assert_eq!(sim.count(1, Event::RekeyFailed(RekeyFailure::Rejected)), 1);
     assert_eq!(sim.nodes[1].engine.state(), EngineState::Active);
-    assert!(sim.nodes[1].sent.iter().all(|f| f.message_type != MessageType::Rekey));
+    assert!(
+        sim.nodes[1]
+            .sent
+            .iter()
+            .all(|f| f.message_type != MessageType::Rekey)
+    );
 
     sim.send(0, b"still works");
     assert_eq!(sim.nodes[1].delivered, vec![b"still works".to_vec()]);
@@ -854,7 +898,11 @@ fn a_timed_out_rekey_aborts_only_the_candidate_and_retries_later() {
 
     assert_eq!(sim.count(0, Event::RekeyFailed(RekeyFailure::Timeout)), 1);
     assert_eq!(sim.nodes[0].engine.state(), EngineState::Active);
-    assert_eq!(sim.closed(0), None, "a rekey timeout must not close the session");
+    assert_eq!(
+        sim.closed(0),
+        None,
+        "a rekey timeout must not close the session"
+    );
 
     // Retry only after the back-off (30 s), via the rekey timer.
     let commits_before = count_commits(&sim.nodes[0]);
@@ -924,10 +972,12 @@ fn close_for_the_active_session_ends_it_and_is_marked_unauthenticated() {
         sim.closed(1),
         Some(CloseCause::PeerUnauthenticated(CloseReason::Normal))
     );
-    assert!(!sim.nodes[1]
-        .sent
-        .iter()
-        .any(|f| f.message_type == MessageType::Close));
+    assert!(
+        !sim.nodes[1]
+            .sent
+            .iter()
+            .any(|f| f.message_type == MessageType::Close)
+    );
 }
 
 #[test]
@@ -954,7 +1004,9 @@ fn close_naming_the_draining_session_closes_only_that_session() {
 #[test]
 fn local_close_sends_close_then_closes_the_transport_in_order() {
     let mut sim = Sim::established();
-    let effects = sim.nodes[0].engine.handle(Input::LocalClose(CloseReason::Normal));
+    let effects = sim.nodes[0]
+        .engine
+        .handle(Input::LocalClose(CloseReason::Normal));
 
     let order: Vec<&str> = effects
         .iter()
@@ -989,9 +1041,11 @@ fn oversized_content_is_rejected_without_touching_the_session() {
 
     sim.send(0, &vec![0; 65_537]);
 
-    assert!(sim.nodes[0]
-        .events
-        .contains(&Event::SendRejected(SendRejection::TooLarge)));
+    assert!(
+        sim.nodes[0]
+            .events
+            .contains(&Event::SendRejected(SendRejection::TooLarge))
+    );
 
     sim.send(0, b"fine");
     assert_eq!(sim.nodes[1].delivered, vec![b"fine".to_vec()]);
@@ -1003,9 +1057,11 @@ fn sending_before_the_session_is_active_is_rejected() {
     sim.input(0, Input::Start);
     sim.input(0, Input::LocalSend(Zeroizing::new(b"early".to_vec())));
 
-    assert!(sim.nodes[0]
-        .events
-        .contains(&Event::SendRejected(SendRejection::NotActive)));
+    assert!(
+        sim.nodes[0]
+            .events
+            .contains(&Event::SendRejected(SendRejection::NotActive))
+    );
 }
 
 #[test]
@@ -1066,7 +1122,10 @@ fn the_engine_module_has_no_clock_socket_thread_or_runtime() {
         "eprintln!",
         "dbg!",
     ] {
-        assert!(!source.contains(forbidden), "engine source mentions {forbidden}");
+        assert!(
+            !source.contains(forbidden),
+            "engine source mentions {forbidden}"
+        );
     }
 }
 
@@ -1100,7 +1159,11 @@ fn random_inputs_never_panic_and_stay_bounded() {
     let mut rng = Seeded(0xdead_beef_cafe_f00d);
 
     for round in 0..200u32 {
-        let role = if round % 2 == 0 { HelloRole::Initiator } else { HelloRole::Responder };
+        let role = if round % 2 == 0 {
+            HelloRole::Initiator
+        } else {
+            HelloRole::Responder
+        };
         let mut engine = Engine::new(
             role,
             IdentityKeypair::from_bytes(&[4; 32]),
@@ -1154,7 +1217,17 @@ fn random_inputs_never_panic_and_stay_bounded() {
 fn the_core_crate_depends_on_no_runtime_terminal_or_os_store() {
     let manifest = include_str!("../Cargo.toml");
 
-    for forbidden in ["tokio", "keyring", "ratatui", "crossterm", "clap", "futures"] {
-        assert!(!manifest.contains(forbidden), "core manifest mentions {forbidden}");
+    for forbidden in [
+        "tokio",
+        "keyring",
+        "ratatui",
+        "crossterm",
+        "clap",
+        "futures",
+    ] {
+        assert!(
+            !manifest.contains(forbidden),
+            "core manifest mentions {forbidden}"
+        );
     }
 }

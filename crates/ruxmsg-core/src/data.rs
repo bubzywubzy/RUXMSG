@@ -9,7 +9,6 @@ use std::fmt;
 use ciborium::value::Value;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-
 use crate::crypto::{decrypt_message, derive_message_key, encrypt_message, message_nonce};
 use crate::error::{Error, Result};
 use crate::protocol::{
@@ -189,11 +188,9 @@ impl DataSender {
             &plaintext,
         )?;
 
-
         // 5. Commit chain and counter only after everything succeeds
         self.chain_key = next_chain;
         self.counter = next_counter;
-
 
         // 6. Return frame
         encode_payload(DataPayload {
@@ -202,7 +199,6 @@ impl DataSender {
             message_counter: counter,
             ciphertext,
         })
-
     }
 }
 

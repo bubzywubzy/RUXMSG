@@ -2,21 +2,21 @@ use bip39::Language;
 use sha2::{Digest, Sha256};
 
 use ruxmsg_core::crypto::{
-    confirmation_mac, derive_message_key, derive_session_keys, message_nonce, sas_indices,
-    sas_words, transcript_hash, verify_confirmation, verify_transcript_signature, EphemeralKeypair,
-    IdentityKeypair,
+    EphemeralKeypair, IdentityKeypair, confirmation_mac, derive_message_key, derive_session_keys,
+    message_nonce, sas_indices, sas_words, transcript_hash, verify_confirmation,
+    verify_transcript_signature,
 };
 use ruxmsg_core::data::{DataPlaintext, DataReceiver, DataSender};
 use ruxmsg_core::encoding::Transcript;
 use ruxmsg_core::error::Error;
 use ruxmsg_core::handshake::{
-    transcript_from_hellos, verify_handshake, HandshakePayload, HandshakePurpose, HandshakeType,
-    HelloPayload, HelloRole, SessionConfirmPayload,
+    HandshakePayload, HandshakePurpose, HandshakeType, HelloPayload, HelloRole,
+    SessionConfirmPayload, transcript_from_hellos, verify_handshake,
 };
 use ruxmsg_core::identity::PeerIdentity;
 use ruxmsg_core::protocol::{
-    DirectionId, FrameLength, MessageType, ProtocolVersion, SessionId, DEFAULT_PADDING_QUANTUM,
-    MAX_FRAME_SIZE,
+    DEFAULT_PADDING_QUANTUM, DirectionId, FrameLength, MAX_FRAME_SIZE, MessageType,
+    ProtocolVersion, SessionId,
 };
 use ruxmsg_core::ratchet::{ReceivingChain, ReplayStatus, ReplayWindow};
 use ruxmsg_core::wire::Frame;
@@ -257,23 +257,12 @@ fn cryptographic_test_vector_is_deterministic() {
 
     // Directional keys must be distinct. Reusing one key in both directions
     // would collapse the protocol's directional separation.
-    assert_ne!(
-        keys.initiator_to_responder,
-        keys.responder_to_initiator
-    );
+    assert_ne!(keys.initiator_to_responder, keys.responder_to_initiator);
 
-    let initiator_confirmation =
-        confirmation_mac(&keys.confirmation_key, &hash, true);
-    let responder_confirmation =
-        confirmation_mac(&keys.confirmation_key, &hash, false);
+    let initiator_confirmation = confirmation_mac(&keys.confirmation_key, &hash, true);
+    let responder_confirmation = confirmation_mac(&keys.confirmation_key, &hash, false);
 
-    verify_confirmation(
-        &keys.confirmation_key,
-        &hash,
-        &initiator_confirmation,
-        true,
-    )
-    .unwrap();
+    verify_confirmation(&keys.confirmation_key, &hash, &initiator_confirmation, true).unwrap();
 
     verify_confirmation(
         &keys.confirmation_key,
@@ -293,8 +282,10 @@ fn cryptographic_test_vector_is_deterministic() {
         .is_err()
     );
 
-    let (message_key_0, chain_key_1) =
-        derive_message_key(&keys.initiator_to_responder, DirectionId::InitiatorToResponder);
+    let (message_key_0, chain_key_1) = derive_message_key(
+        &keys.initiator_to_responder,
+        DirectionId::InitiatorToResponder,
+    );
     let (message_key_1, chain_key_2) =
         derive_message_key(&chain_key_1, DirectionId::InitiatorToResponder);
 
@@ -322,10 +313,7 @@ fn cryptographic_test_vector_is_deterministic() {
 
     // Padding is selected so the plaintext plus the AEAD tag lands exactly
     // on the protocol's padding quantum.
-    assert_eq!(
-        (encoded_plaintext.len() + 16) % DEFAULT_PADDING_QUANTUM,
-        0
-    );
+    assert_eq!((encoded_plaintext.len() + 16) % DEFAULT_PADDING_QUANTUM, 0);
 
     let mut sender = DataSender::new(
         keys.session_id,
@@ -371,10 +359,7 @@ fn protocol_version_and_message_registry_are_closed() {
         ));
     }
 
-    assert_eq!(
-        MessageType::try_from(0x01).unwrap(),
-        MessageType::Handshake
-    );
+    assert_eq!(MessageType::try_from(0x01).unwrap(), MessageType::Handshake);
     assert_eq!(
         MessageType::try_from(0x02).unwrap(),
         MessageType::SessionConfirm
@@ -423,20 +408,12 @@ fn frame_length_and_truncation_limits_are_enforced() {
 #[test]
 fn canonical_cbor_rejects_noncanonical_and_malformed_maps() {
     // Canonical map with ascending integer keys.
-    let valid = Frame::new(
-        MessageType::Data,
-        vec![0xa2, 0x00, 0x01, 0x01, 0x02],
-    )
-    .unwrap();
+    let valid = Frame::new(MessageType::Data, vec![0xa2, 0x00, 0x01, 0x01, 0x02]).unwrap();
 
     assert!(valid.validate_cbor_map().is_ok());
 
     // A key may not occur twice, even if the two values differ.
-    let duplicate = Frame::new(
-        MessageType::Data,
-        vec![0xa2, 0x00, 0x01, 0x00, 0x02],
-    )
-    .unwrap();
+    let duplicate = Frame::new(MessageType::Data, vec![0xa2, 0x00, 0x01, 0x00, 0x02]).unwrap();
 
     assert_eq!(
         duplicate.validate_cbor_map(),
@@ -444,23 +421,12 @@ fn canonical_cbor_rejects_noncanonical_and_malformed_maps() {
     );
 
     // Protocol maps use unsigned integer keys; text keys are invalid.
-    let text_key = Frame::new(
-        MessageType::Data,
-        vec![0xa1, 0x61, b'x', 0x01],
-    )
-    .unwrap();
+    let text_key = Frame::new(MessageType::Data, vec![0xa1, 0x61, b'x', 0x01]).unwrap();
 
-    assert_eq!(
-        text_key.validate_cbor_map(),
-        Err(Error::InvalidMapKey)
-    );
+    assert_eq!(text_key.validate_cbor_map(), Err(Error::InvalidMapKey));
 
     // Canonical CBOR requires map keys to be ordered.
-    let unsorted = Frame::new(
-        MessageType::Data,
-        vec![0xa2, 0x01, 0x01, 0x00, 0x02],
-    )
-    .unwrap();
+    let unsorted = Frame::new(MessageType::Data, vec![0xa2, 0x01, 0x01, 0x00, 0x02]).unwrap();
 
     assert_eq!(
         unsorted.validate_cbor_map(),
@@ -469,11 +435,7 @@ fn canonical_cbor_rejects_noncanonical_and_malformed_maps() {
 
     // A payload must contain exactly one CBOR object. Bytes after that
     // object cannot be silently ignored.
-    let trailing = Frame::new(
-        MessageType::Data,
-        vec![0xa1, 0x00, 0x01, 0x00],
-    )
-    .unwrap();
+    let trailing = Frame::new(MessageType::Data, vec![0xa1, 0x00, 0x01, 0x00]).unwrap();
 
     assert_eq!(
         trailing.validate_cbor_map(),
@@ -483,10 +445,7 @@ fn canonical_cbor_rejects_noncanonical_and_malformed_maps() {
     // Every protocol payload that reaches this validator must be a map.
     let array = Frame::new(MessageType::Data, vec![0x81, 0x01]).unwrap();
 
-    assert_eq!(
-        array.validate_cbor_map(),
-        Err(Error::InvalidPayloadShape)
-    );
+    assert_eq!(array.validate_cbor_map(), Err(Error::InvalidPayloadShape));
 }
 
 #[test]
@@ -505,10 +464,7 @@ fn hello_payload_enforces_initial_and_rekey_schema() {
 
     // Initial handshakes create a new session and therefore cannot claim a
     // previous session identifier.
-    assert_eq!(
-        initial_with_previous.encode(),
-        Err(Error::InvalidHandshake)
-    );
+    assert_eq!(initial_with_previous.encode(), Err(Error::InvalidHandshake));
 
     let rekey_without_previous = HelloPayload {
         cipher_suite: 1,
@@ -671,8 +627,7 @@ fn replay_window_enforces_duplicate_and_age_boundaries() {
 
 #[test]
 fn receiving_chain_prepares_without_consuming_keys() {
-    let mut chain =
-        ReceivingChain::new([1; 32], DirectionId::InitiatorToResponder);
+    let mut chain = ReceivingChain::new([1; 32], DirectionId::InitiatorToResponder);
 
     assert_eq!(chain.skipped_len(), 0);
 
@@ -709,14 +664,10 @@ fn receiving_chain_prepares_without_consuming_keys() {
 
 #[test]
 fn receiving_chain_enforces_skipped_key_limit() {
-    let mut chain =
-        ReceivingChain::new([2; 32], DirectionId::InitiatorToResponder);
+    let mut chain = ReceivingChain::new([2; 32], DirectionId::InitiatorToResponder);
 
     // A gap of 65 requires more than the permitted skipped-key budget.
-    assert_eq!(
-        chain.prepare_message_key(65),
-        Err(Error::SkippedKeyLimit)
-    );
+    assert_eq!(chain.prepare_message_key(65), Err(Error::SkippedKeyLimit));
 
     // A gap of exactly 64 is permitted: 64 skipped keys plus the pending
     // target key occupy 65 entries.
@@ -724,10 +675,7 @@ fn receiving_chain_enforces_skipped_key_limit() {
     assert_eq!(chain.skipped_len(), 65);
 
     // Once that cache is full, another forward jump cannot be prepared.
-    assert_eq!(
-        chain.prepare_message_key(66),
-        Err(Error::SkippedKeyLimit)
-    );
+    assert_eq!(chain.prepare_message_key(66), Err(Error::SkippedKeyLimit));
 }
 
 #[test]
@@ -741,10 +689,7 @@ fn data_padding_preserves_content_and_requires_zero_padding() {
 
         let encoded = padded.encode().unwrap();
 
-        assert_eq!(
-            (encoded.len() + 16) % DEFAULT_PADDING_QUANTUM,
-            0
-        );
+        assert_eq!((encoded.len() + 16) % DEFAULT_PADDING_QUANTUM, 0);
 
         let decoded = DataPlaintext::decode(&encoded).unwrap();
         assert_eq!(decoded.content, content);
@@ -759,21 +704,16 @@ fn data_padding_preserves_content_and_requires_zero_padding() {
 
     let encoded = invalid.encode().unwrap();
 
-    assert_eq!(
-        DataPlaintext::decode(&encoded),
-        Err(Error::InvalidPadding)
-    );
+    assert_eq!(DataPlaintext::decode(&encoded), Err(Error::InvalidPadding));
 }
 
 #[test]
 fn failed_aead_does_not_burn_current_message_key() {
     let session_id = SessionId::from_bytes([1; 16]);
 
-    let mut sender =
-        DataSender::new(session_id, DirectionId::InitiatorToResponder, [5; 32]);
+    let mut sender = DataSender::new(session_id, DirectionId::InitiatorToResponder, [5; 32]);
 
-    let mut receiver =
-        DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [5; 32]);
+    let mut receiver = DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [5; 32]);
 
     // Generate exactly one frame so the legitimate copy is still counter 0.
     let frame = sender.encrypt(b"secret payload").unwrap();
@@ -784,29 +724,21 @@ fn failed_aead_does_not_burn_current_message_key() {
         *last ^= 0x01;
     }
 
-    assert_eq!(
-        receiver.decrypt(&tampered),
-        Err(Error::AeadFailure)
-    );
+    assert_eq!(receiver.decrypt(&tampered), Err(Error::AeadFailure));
 
     // Authentication failure must not commit or destroy the ratchet key.
     // Otherwise an attacker could permanently desynchronize the receiver
     // by sending a modified ciphertext.
-    assert_eq!(
-        receiver.decrypt(&frame).unwrap(),
-        b"secret payload"
-    );
+    assert_eq!(receiver.decrypt(&frame).unwrap(), b"secret payload");
 }
 
 #[test]
 fn failed_aead_does_not_burn_future_message_key() {
     let session_id = SessionId::from_bytes([2; 16]);
 
-    let mut sender =
-        DataSender::new(session_id, DirectionId::InitiatorToResponder, [6; 32]);
+    let mut sender = DataSender::new(session_id, DirectionId::InitiatorToResponder, [6; 32]);
 
-    let mut receiver =
-        DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [6; 32]);
+    let mut receiver = DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [6; 32]);
 
     let mut frames = Vec::new();
 
@@ -822,70 +754,47 @@ fn failed_aead_does_not_burn_future_message_key() {
         *last ^= 0x01;
     }
 
-    assert_eq!(
-        receiver.decrypt(&tampered),
-        Err(Error::AeadFailure)
-    );
+    assert_eq!(receiver.decrypt(&tampered), Err(Error::AeadFailure));
 
-    assert_eq!(
-        receiver.decrypt(&frames[5]).unwrap(),
-        b"future payload"
-    );
+    assert_eq!(receiver.decrypt(&frames[5]).unwrap(), b"future payload");
 }
 
 #[test]
 fn wrong_direction_is_rejected_without_advancing_the_ratchet() {
     let session_id = SessionId::from_bytes([4; 16]);
 
-    let mut sender =
-        DataSender::new(session_id, DirectionId::ResponderToInitiator, [8; 32]);
+    let mut sender = DataSender::new(session_id, DirectionId::ResponderToInitiator, [8; 32]);
 
-    let mut receiver =
-        DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [8; 32]);
+    let mut receiver = DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [8; 32]);
 
     let frame = sender.encrypt(b"wrong direction").unwrap();
 
-    assert_eq!(
-        receiver.decrypt(&frame),
-        Err(Error::InvalidDataPayload)
-    );
+    assert_eq!(receiver.decrypt(&frame), Err(Error::InvalidDataPayload));
 
     // The receiver must still be able to process its own direction's counter
     // zero after seeing the invalid-direction frame. This catches implementations
     // that advance replay or ratchet state before validating direction.
-    let mut valid_sender =
-        DataSender::new(session_id, DirectionId::InitiatorToResponder, [8; 32]);
+    let mut valid_sender = DataSender::new(session_id, DirectionId::InitiatorToResponder, [8; 32]);
 
     let valid_frame = valid_sender.encrypt(b"valid direction").unwrap();
 
-    assert_eq!(
-        receiver.decrypt(&valid_frame).unwrap(),
-        b"valid direction"
-    );
+    assert_eq!(receiver.decrypt(&valid_frame).unwrap(), b"valid direction");
 }
 
 #[test]
 fn successful_decryption_commits_key_and_rejects_replay() {
     let session_id = SessionId::from_bytes([5; 16]);
 
-    let mut sender =
-        DataSender::new(session_id, DirectionId::InitiatorToResponder, [9; 32]);
+    let mut sender = DataSender::new(session_id, DirectionId::InitiatorToResponder, [9; 32]);
 
-    let mut receiver =
-        DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [9; 32]);
+    let mut receiver = DataReceiver::new(session_id, DirectionId::InitiatorToResponder, [9; 32]);
 
     let frame = sender.encrypt(b"one time message").unwrap();
 
-    assert_eq!(
-        receiver.decrypt(&frame).unwrap(),
-        b"one time message"
-    );
+    assert_eq!(receiver.decrypt(&frame).unwrap(), b"one time message");
 
     // Once authenticated, the counter is committed to the replay window.
-    assert_eq!(
-        receiver.decrypt(&frame),
-        Err(Error::ReplayRejected)
-    );
+    assert_eq!(receiver.decrypt(&frame), Err(Error::ReplayRejected));
 }
 
 #[test]

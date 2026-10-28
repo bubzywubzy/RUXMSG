@@ -3,26 +3,26 @@
 
 use std::io;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use tokio::io::{duplex, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, duplex};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::Receiver;
-use tokio::time::{timeout, Instant};
+use tokio::time::{Instant, timeout};
 use zeroize::Zeroizing;
 
 use ruxmsg::close::CloseReason;
 use ruxmsg::crypto::IdentityKeypair;
 use ruxmsg::handshake::HelloRole;
 use ruxmsg::machine::CloseCause;
+use ruxmsg::protocol::MessageType;
+use ruxmsg::wire::Frame;
 use ruxmsg_net::{
     ConnEvent, ConnectionHandle, DecodeError, FrameDecoder, HandleError, Net, NetEvent,
 };
-use ruxmsg::protocol::MessageType;
-use ruxmsg::wire::Frame;
 
 fn identity(seed: u8) -> IdentityKeypair {
     IdentityKeypair::from_bytes(&[seed; 32])
@@ -167,7 +167,11 @@ fn decoder_keeps_partial_frames_across_pushes() {
     let mut decoder = FrameDecoder::new();
 
     for (index, byte) in wire.iter().enumerate() {
-        assert_eq!(decoder.next_frame(), Ok(None), "frame completed early at {index}");
+        assert_eq!(
+            decoder.next_frame(),
+            Ok(None),
+            "frame completed early at {index}"
+        );
         decoder.push(&[*byte]);
     }
 
@@ -185,8 +189,14 @@ fn decoder_splits_back_to_back_frames() {
     let mut decoder = FrameDecoder::new();
     decoder.push(&wire);
 
-    assert_eq!(decoder.next_frame().unwrap().unwrap().message_type, MessageType::Close);
-    assert_eq!(decoder.next_frame().unwrap().unwrap().message_type, MessageType::Data);
+    assert_eq!(
+        decoder.next_frame().unwrap().unwrap().message_type,
+        MessageType::Close
+    );
+    assert_eq!(
+        decoder.next_frame().unwrap().unwrap().message_type,
+        MessageType::Data
+    );
     assert_eq!(decoder.next_frame(), Ok(None));
 }
 
@@ -314,7 +324,11 @@ async fn a_write_that_fails_mid_frame_ends_the_connection() {
 
     let mut received = Vec::new();
     peer.read_to_end(&mut received).await.unwrap();
-    assert_eq!(received.len(), 10, "exactly the written prefix, nothing after it");
+    assert_eq!(
+        received.len(),
+        10,
+        "exactly the written prefix, nothing after it"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -478,7 +492,9 @@ async fn loopback_tcp_listener_and_connect() {
         establish(&mut server_rx, &accepted, true)
     );
 
-    dialed.send_message(Zeroizing::new(b"over tcp".to_vec())).unwrap();
+    dialed
+        .send_message(Zeroizing::new(b"over tcp".to_vec()))
+        .unwrap();
     assert_eq!(message(&mut server_rx).await, b"over tcp");
 
     listener.stop();
@@ -510,10 +526,16 @@ async fn the_listener_serves_at_most_four_unauthenticated_handshakes() {
 
     // The fifth connection is dropped by the server; the others stay open and idle.
     let fifth = timeout(Duration::from_secs(2), clients[4].read(&mut byte)).await;
-    assert!(matches!(fifth, Ok(Ok(0)) | Ok(Err(_))), "fifth connection must be closed");
+    assert!(
+        matches!(fifth, Ok(Ok(0)) | Ok(Err(_))),
+        "fifth connection must be closed"
+    );
 
     let first = timeout(Duration::from_millis(200), clients[0].read(&mut byte)).await;
-    assert!(first.is_err(), "admitted connections stay open while waiting for COMMIT");
+    assert!(
+        first.is_err(),
+        "admitted connections stay open while waiting for COMMIT"
+    );
 
     listener.stop();
 }

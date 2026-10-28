@@ -1,9 +1,9 @@
 //! Per-type payload limits and MAX_CONTENT (spec §4.3).
 
-use ruxmsg_core::data::DataSender;
-use ruxmsg_core::protocol::{DirectionId, MessageType, SessionId, MAX_CONTENT};
-use ruxmsg_core::wire::Frame;
 use ruxmsg_core::Error;
+use ruxmsg_core::data::DataSender;
+use ruxmsg_core::protocol::{DirectionId, MAX_CONTENT, MessageType, SessionId};
+use ruxmsg_core::wire::Frame;
 
 #[test]
 fn control_frames_are_limited_by_type() {
