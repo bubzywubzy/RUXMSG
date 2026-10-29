@@ -7,10 +7,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
     strategy:
       fail-fast: false
       matrix:
@@ -19,37 +28,63 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libdbus-1-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
-      - run: cargo fmt --all -- --check
-      - run: cargo check --workspace --all-targets
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-targets --all-features
+      - name: Check formatting
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --workspace --all-targets --all-features
 
   fuzz-smoke:
+    name: Fuzz smoke tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libdbus-1-dev
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
 
-      - uses: dtolnay/rust-toolchain@nightly
-
-      - uses: Swatinem/rust-cache@v2
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          workspaces: fuzz -> fuzz/target
+          components: rustfmt
+
+      - name: Cache fuzz dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            fuzz -> fuzz/target
+          cache-on-failure: true
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --version 0.13.2 --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz@0.13.2
 
       - name: Build fuzz targets
         run: cargo fuzz build
@@ -59,15 +94,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for target in close_decode config_parse data_decrypt engine_inputs frame_cbor frame_decode frame_stream handshake_decode ratchet_state; do
+
+          for target in \
+            close_decode \
+            config_parse \
+            data_decrypt \
+            engine_inputs \
+            frame_cbor \
+            frame_decode \
+            frame_stream \
+            handshake_decode \
+            ratchet_state
+          do
+            echo "::group::Fuzz target: ${target}"
             cargo fuzz run "$target" -- -runs=100 -max_len=4096 -timeout=10
+            echo "::endgroup::"
           done
         working-directory: fuzz
 
-      - name: Upload fuzz crash artifacts
+      - name: Upload fuzz artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-artifacts-${{ runner.os }}
+          name: fuzz-artifacts-${{ github.run_id }}
           path: fuzz/artifacts/
           if-no-files-found: ignore
+          retention-days: 14
