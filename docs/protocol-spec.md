@@ -2,7 +2,7 @@
 
 **Protocol:** RUXMSG/1
 **Specification version:** 1.1 (draft, supersedes 1.0)
-**Status:** Normative. Items marked **[PROPOSED]** are new in 1.1 and need owner confirmation (see Appendix B). The reference implementation already follows them; see the conformance matrix.
+**Status:** Normative. Items marked **[CLOSED]** are new in 1.1 and need owner confirmation (see Appendix B). The reference implementation already follows them; see the conformance matrix.
 **Scope:** Two-party, direct, end-to-end encrypted, volatile messaging. Groups, anonymity features and offline delivery are RUXMSG/2 (Appendix C) and are **not** part of this document.
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.
@@ -129,7 +129,7 @@ Version `0x01` is the only version; there is no negotiation. A receiver of any o
 
 ### 4.3 Size limits
 
-The absolute maximum payload is 1 MiB (1,048,576 bytes). **[PROPOSED]** Per-type limits apply, checked from the type byte before allocation:
+The absolute maximum payload is 1 MiB (1,048,576 bytes). **[CLOSED]** Per-type limits apply, checked from the type byte before allocation:
 
 | Type | Max payload |
 | --- | ---: |
@@ -138,7 +138,7 @@ The absolute maximum payload is 1 MiB (1,048,576 bytes). **[PROPOSED]** Per-type
 | CLOSE | 256 bytes |
 | DATA | 1,048,576 bytes |
 
-DATA frames MUST NOT be accepted before the session is ACTIVE (or REKEYING/DRAINING). Application content per DATA message is limited to `MAX_CONTENT = 65,536` bytes **[PROPOSED]**; senders MUST split larger messages.
+DATA frames MUST NOT be accepted before the session is ACTIVE (or REKEYING/DRAINING). Application content per DATA message is limited to `MAX_CONTENT = 65,536` bytes **[CLOSED]**; senders MUST split larger messages.
 
 ### 4.4 Deterministic CBOR
 
@@ -175,7 +175,7 @@ Initiator                                   Responder
                        ACTIVE
 ```
 
-### 5.2 COMMIT **[PROPOSED — D-012]**
+### 5.2 COMMIT **[CLOSED — D-012]**
 
 A SAS is only 33 bits. If a man-in-the-middle can choose its handshake values after seeing the other side's values, it can grind nonces offline until the SAS on both of its connections matches, and the human check then proves nothing. To prevent this, the initiator commits before it sees any responder value.
 
@@ -330,7 +330,7 @@ Confirmations are verified in constant time. An unknown session ID, wrong role, 
 
 All session state is destroyed on exit or crash. The identity seed persists; nothing else does. DATA for a destroyed or unknown session ID MUST be rejected.
 
-### 6.3 Transport loss **[PROPOSED — D-013]**
+### 6.3 Transport loss **[CLOSED — D-013]**
 
 In RUXMSG/1 a session is bound to exactly one transport connection. When the connection ends for any reason, the session moves to CLOSED and its state is destroyed. Reconnecting is a new handshake with a new SAS. No resumption mechanism exists in RUXMSG/1. This removes the need for any counter or nonce continuity across connections: state is never carried over, so nonce reuse across connections is impossible by construction.
 
@@ -408,7 +408,7 @@ The cryptographic layer authenticates each message and rejects duplicates; it do
 
 A rekey begins at the first of: 24 hours since ACTIVE; 1,000,000 DATA messages sent by the local peer or accepted from the remote peer; or an explicit request. Either peer may initiate.
 
-### 8.2 Authentication by identity continuity **[PROPOSED — D-015]**
+### 8.2 Authentication by identity continuity **[CLOSED — D-015]**
 
 A rekey uses the §5 handshake with `handshake_purpose = 1`, frame type REKEY, and a required `previous_session_id`. It does **not** require SAS. Instead the receiver MUST verify all of the following, and MUST discard the candidate on any failure:
 
@@ -445,7 +445,7 @@ If both peers send a rekey COMMIT for the same `previous_session_id`, compare th
 
 Reasons: `0` normal, `1` protocol_error, `2` authentication_failed, `3` identity_changed, `4` resource_limit, `5` shutdown. Unknown reasons are rejected. `detail` is diagnostic only, MUST NOT contain secrets or plaintext, and MUST NOT be required for interoperability.
 
-### 9.2 CLOSE is unauthenticated **[PROPOSED — D-017]**
+### 9.2 CLOSE is unauthenticated **[CLOSED — D-017]**
 
 In RUXMSG/1, CLOSE is a plaintext control frame and carries no authentication. An on-path attacker who can forge CLOSE could equally reset the TCP connection, so it gains no new capability. Nevertheless:
 
@@ -483,7 +483,7 @@ Peer-supplied text is untrusted. Before rendering to a terminal, implementations
 
 RUXMSG requires a reliable ordered byte stream. TCP is the reference transport; Tailscale supplies reachability only. Implementations SHOULD bind listeners to loopback or a tailnet address by default rather than all interfaces.
 
-Implementations MUST enforce the following. Defaults are **[PROPOSED]**:
+Implementations MUST enforce the following. Defaults are **[CLOSED]**:
 
 | Limit | Default |
 | --- | ---: |
@@ -538,14 +538,14 @@ RUXMSG/1 MUST NOT be described as production-secure solely because it uses estab
 
 | ID | Decision | Status |
 | --- | --- | --- |
-| D-001–D-011 | Version, registry, schemas, handshake transport, AAD/nonce, errors, lifecycle, SAS dictionary, symmetric HELLO (from spec 1.0) | Closed |
-| D-012 | Initiator COMMIT before HELLO exchange to make the SAS grind-resistant | **Proposed** |
-| D-013 | A session is bound to one transport connection; reconnect = new handshake and SAS | **Proposed** (consistent with "SAS every connection") |
-| D-014 | Padding quantum measured on ciphertext (plaintext + 16-byte tag), matching the current code | **Proposed** (amends D-006) |
-| D-015 | Rekey authenticated by identity continuity, no SAS | **Proposed** |
-| D-016 | Per-type frame limits, `MAX_CONTENT`, handshake timeouts, unauthenticated-handshake cap | **Proposed** (values are defaults) |
-| D-017 | CLOSE is unauthenticated in V1 | **Proposed** |
-| D-018 | No trust store, no address book, SAS on every connection; only the identity seed persists | Closed (owner decision) |
+| D-001–D-011 | Version, registry, schemas, handshake transport, AAD/nonce, errors, lifecycle, SAS dictionary, symmetric HELLO (from spec 1.0) | **CLOSED** |
+| D-012 | Initiator COMMIT before HELLO exchange to make the SAS grind-resistant | **CLOSED** |
+| D-013 | A session is bound to one transport connection; reconnect = new handshake and SAS | **CLOSED** (consistent with "SAS every connection") |
+| D-014 | Padding quantum measured on ciphertext (plaintext + 16-byte tag), matching the current code | **CLOSED** (amends D-006) |
+| D-015 | Rekey authenticated by identity continuity, no SAS | **CLOSED** |
+| D-016 | Per-type frame limits, `MAX_CONTENT`, handshake timeouts, unauthenticated-handshake cap | **CLOSED** (values are defaults) |
+| D-017 | CLOSE is unauthenticated in V1 | **CLOSED** |
+| D-018 | No trust store, no address book, SAS on every connection; only the identity seed persists | **CLOSED** (owner decision) |
 
 ## Appendix C — RUXMSG/2 roadmap (non-normative)
 
