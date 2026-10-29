@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::io::Cursor;
 
 use ciborium::value::Value;
+use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::protocol::{FrameLength, MAX_FRAME_SIZE, MessageType, ProtocolVersion};
@@ -101,15 +102,25 @@ impl Frame {
 
     /// Verifies that the payload is one complete deterministic CBOR map.
     pub fn validate_cbor_map(&self) -> Result<Vec<(u64, Value)>> {
-        let mut cursor = Cursor::new(self.payload.as_slice());
+        Self::validate_cbor_map_payload(&self.payload)
+    }
+
+    pub(crate) fn validate_cbor_map_payload(payload: &[u8]) -> Result<Vec<(u64, Value)>> {
+        if payload.len() > MAX_FRAME_SIZE as usize {
+            return Err(Error::InvalidFrameLength(
+                u32::try_from(payload.len()).unwrap_or(u32::MAX),
+            ));
+        }
+
+        let mut cursor = Cursor::new(payload);
         let value: Value = ciborium::de::from_reader(&mut cursor)
             .map_err(|error| Error::Encoding(error.to_string()))?;
 
-        if cursor.position() != self.payload.len() as u64 {
+        if cursor.position() != payload.len() as u64 {
             return Err(Error::NonCanonicalEncoding);
         }
 
-        let Value::Map(entries) = &value else {
+        let Value::Map(entries) = value else {
             return Err(Error::InvalidPayloadShape);
         };
 
@@ -120,34 +131,41 @@ impl Frame {
             let Value::Integer(integer) = key else {
                 return Err(Error::InvalidMapKey);
             };
-            let key: u64 = (*integer).try_into().map_err(|_| Error::InvalidMapKey)?;
+            let key: u64 = integer.try_into().map_err(|_| Error::InvalidMapKey)?;
             if !keys.insert(key) {
                 return Err(Error::DuplicateMapKey(key));
             }
-            canonical_entries.push((key, value.clone()));
+            canonical_entries.push((key, value));
         }
         canonical_entries.sort_by_key(|(key, _)| *key);
 
         let canonical_value = Value::Map(
             canonical_entries
-                .iter()
-                .map(|(key, value)| (Value::Integer((*key).into()), value.clone()))
+                .into_iter()
+                .map(|(key, value)| (Value::Integer(key.into()), value))
                 .collect(),
         );
 
-        let mut canonical = Vec::new();
+        let mut canonical = Zeroizing::new(Vec::new());
 
-        ciborium::ser::into_writer(&canonical_value, &mut canonical)
+        ciborium::ser::into_writer(&canonical_value, &mut *canonical)
             .map_err(|error| Error::Encoding(error.to_string()))?;
-        if canonical != self.payload {
+        if canonical.as_slice() != payload {
             return Err(Error::NonCanonicalEncoding);
         }
-        Ok(canonical_entries)
-    }
 
-    /// Returns the maximum payload accepted by the frame layer.
-    pub const fn max_payload_size() -> u32 {
-        MAX_FRAME_SIZE
+        let Value::Map(entries) = canonical_value else {
+            return Err(Error::InvalidPayloadShape);
+        };
+        entries
+            .into_iter()
+            .map(|(key, value)| {
+                let Value::Integer(key) = key else {
+                    return Err(Error::InvalidMapKey);
+                };
+                Ok((u64::try_from(key).map_err(|_| Error::InvalidMapKey)?, value))
+            })
+            .collect()
     }
 }
 
