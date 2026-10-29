@@ -13,10 +13,18 @@ libfuzzer-sys = "0.4"
 zeroize = "1.8"
 ruxmsg = { package = "ruxmsg-core", path = "../crates/ruxmsg-core" }
 ruxmsg-cli = { path = "../crates/ruxmsg-cli" }
+ruxmsg-net = { path = "../crates/ruxmsg-net" }
 
 [[bin]]
 name = "frame_decode"
 path = "fuzz_targets/frame_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame_stream"
+path = "fuzz_targets/frame_stream.rs"
 test = false
 doc = false
 bench = false

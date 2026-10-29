@@ -14,7 +14,7 @@ RUXMSG is a security-sensitive Rust protocol implementation. Small changes can a
 
 ## Toolchain and checks
 
-The workspace `Cargo.toml` declares Rust 1.88 and edition 2024 (the fuzz crate uses edition 2021). On Linux you need `pkg-config` and `libdbus-1-dev` for the credential store. CI runs, in order:
+The workspace `Cargo.toml` declares Rust 1.88 and edition 2024 (the fuzz crate uses edition 2021). On Linux you need `pkg-config` and `libdbus-1-dev` for the credential store. CI runs the workspace checks on Linux, macOS, and Windows; Linux needs those system packages. The Linux job also builds all fuzz targets with nightly and runs each target for a short smoke budget. The stable workspace checks are:
 
 ```text
 cargo fmt --all -- --check
@@ -61,9 +61,9 @@ The specification is authoritative. Explanatory documents must link to it rather
 
 ## Fuzzing
 
-Fuzz targets live in `fuzz/fuzz_targets/` (a separate workspace) and cover CLOSE decoding, DATA decryption, CBOR payloads, frame decoding, handshake decoding including COMMIT, the receiving ratchet, arbitrary engine input sequences, and the config parser. `fuzz/corpus/` and `fuzz/artifacts/` are git-ignored, so corpora are local. Run fuzzing with `cargo fuzz` from `fuzz/` (it needs a nightly toolchain) and record meaningful findings in the change description. When you change a decoder, the engine or the config schema, extend or add the matching target.
+Fuzz targets live in `fuzz/fuzz_targets/` (a separate workspace) and cover CLOSE decoding, DATA decryption, CBOR payloads, single-frame and incremental stream decoding, handshake decoding including COMMIT, the receiving ratchet, arbitrary engine input sequences, and the config parser. `fuzz/corpus/` and `fuzz/artifacts/` are git-ignored, so generated corpora are local; retain minimized regressions in tests or curated fixtures. Run fuzzing with `cargo fuzz` from `fuzz/` (it needs a nightly toolchain) and record target, revision, duration, and findings in the change description. CI smoke runs are bounded to 100 executions per target; they check harness startup and basic execution, not meaningful coverage or security assurance. When you change a decoder, the engine or the config schema, extend or add the matching target.
 
-A target existing does not prove fuzzing was run or that any result was achieved.
+A target existing or a short smoke run does not prove meaningful fuzz coverage or security assurance. Longer campaigns and any discovered crash must be reported separately.
 
 ## Security-sensitive review
 
