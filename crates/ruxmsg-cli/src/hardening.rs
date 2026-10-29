@@ -12,7 +12,7 @@ pub(crate) fn apply() -> Vec<&'static str> {
     let mut warnings = Vec::new();
 
     #[cfg(not(unix))]
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
 
     #[cfg(unix)]
     {
