@@ -7,6 +7,7 @@ This document defines the vulnerability reporting process and the security bound
 Do **not** open a public GitHub issue for suspected security vulnerabilities.
 
 Please report vulnerabilities privately via [GitHub Security Advisories](https://github.com/bubzywubzy/RUXMSG/security/advisories/new). Include:
+
 - Affected crate(s) (`ruxmsg-core`, `ruxmsg-net`, or `ruxmsg-cli`) and version/commit.
 - A minimal reproduction, test case, or fuzzer input (`fuzz/`).
 - The impact (e.g., transcript forgery, key-cache exhaustion, terminal escape injection, or panic/DoS).
@@ -18,6 +19,7 @@ Please report vulnerabilities privately via [GitHub Security Advisories](https:/
 The underlying network is assumed to be hostile. An attacker may observe, capture, replay, reorder, duplicate, drop, modify, inject, or delay frames, and may reset or terminate the TCP connection at any time. IP addresses, DNS names, Tailscale device names, and OS usernames are **not** cryptographic identities.
 
 RUXMSG/1 protects application messages with:
+
 - **Persistent identity:** One 32-byte Ed25519 identity seed per profile, stored only in the OS credential store.
 - **Ephemeral forward secrecy:** A fresh X25519 key agreement per connection and per rekey.
 - **Grind-resistant human authentication:** A committed handshake (`COMMIT` -> `HELLO` -> reveal) verified via a 3-word BIP-0039 Short Authentication String (SAS) on **every** connection.
@@ -73,6 +75,4 @@ Every untrusted input is strictly bounded prior to allocation or state mutation:
 - **Ratchet & Replay:** 64-message sliding replay bitmap; max 64 skipped keys per derivation gap; hard ceiling of 128 prepared keys in `ReceivingChain`, including target keys.
 - **Timeouts:** 15 s TCP connect/write timeout; 15 s per-frame handshake read timeout (paused during the human SAS window); 120 s SAS decision timeout; 180 s total handshake/rekey timeout; 15 s old-session drain window; 30 s backoff before retrying a failed rekey; at most eight late rekey frames discarded per abandoned candidate.
 - **Concurrency & Queues:** Max 4 concurrent unauthenticated inbound handshakes (`Semaphore`); max 4 queued SAS prompts; bounded MPSC channels (64 message, 8 control, 256 net events); scrollback capped at 1,000 entries and 256 KiB per peer (64 KiB per entry).
-- **Config loader:** Max 16 KiB, UTF-8, `O_NOFOLLOW | O_NONBLOCK` (refuses symlinks and FIFOs), must be a regular file owned by the 
-
-current UID and not group/world-writable (`mode & 0o022 == 0`), `deny_unknown_fields`, and never echoes file contents in error messages.
+- **Config loader:** Max 16 KiB, UTF-8, `O_NOFOLLOW | O_NONBLOCK` (refuses symlinks and FIFOs), must be a regular file owned by the current UID and not group/world-writable (`mode & 0o022 == 0`), `deny_unknown_fields`, and never echoes file contents in error messages.
