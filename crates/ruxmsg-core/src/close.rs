@@ -73,25 +73,21 @@ impl ClosePayload {
         if frame.message_type != MessageType::Close {
             return Err(Error::InvalidClosePayload);
         }
-        frame.validate_cbor_map()?;
-        let value: Value = ciborium::de::from_reader(frame.payload.as_slice())
-            .map_err(|error| Error::Encoding(error.to_string()))?;
-        let Value::Map(entries) = value else {
-            return Err(Error::InvalidClosePayload);
-        };
+
+        let entries = frame.validate_cbor_map()?;
+
         if !(1..=3).contains(&entries.len()) {
             return Err(Error::InvalidClosePayload);
         }
-        let mut fields: Vec<Option<Value>> = (0..3).map(|_| None).collect();
+
+        let mut fields: Vec<Option<Value>> = vec![None, None, None];
+
         for (key, value) in entries {
-            let Value::Integer(key) = key else {
-                return Err(Error::InvalidClosePayload);
-            };
-            let key = usize::try_from(key).map_err(|_| Error::InvalidClosePayload)?;
-            if key >= fields.len() || fields[key].is_some() {
+            let index = usize::try_from(key).map_err(|_| Error::InvalidClosePayload)?;
+            if index >= fields.len() || fields[index].is_some() {
                 return Err(Error::InvalidClosePayload);
             }
-            fields[key] = Some(value);
+            fields[index] = Some(value);
         }
         let session_id = fields[0]
             .take()

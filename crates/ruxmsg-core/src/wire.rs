@@ -100,18 +100,22 @@ impl Frame {
     }
 
     /// Verifies that the payload is one complete deterministic CBOR map.
-    pub fn validate_cbor_map(&self) -> Result<()> {
+    pub fn validate_cbor_map(&self) -> Result<Vec<(u64, Value)>> {
         let mut cursor = Cursor::new(self.payload.as_slice());
         let value: Value = ciborium::de::from_reader(&mut cursor)
             .map_err(|error| Error::Encoding(error.to_string()))?;
+
         if cursor.position() != self.payload.len() as u64 {
             return Err(Error::NonCanonicalEncoding);
         }
+
         let Value::Map(entries) = &value else {
             return Err(Error::InvalidPayloadShape);
         };
+
         let mut keys = HashSet::with_capacity(entries.len());
         let mut canonical_entries = Vec::with_capacity(entries.len());
+
         for (key, value) in entries {
             let Value::Integer(integer) = key else {
                 return Err(Error::InvalidMapKey);
@@ -123,19 +127,22 @@ impl Frame {
             canonical_entries.push((key, value.clone()));
         }
         canonical_entries.sort_by_key(|(key, _)| *key);
+
         let canonical_value = Value::Map(
             canonical_entries
-                .into_iter()
-                .map(|(key, value)| (Value::Integer(key.into()), value))
+                .iter()
+                .map(|(key, value)| (Value::Integer((*key).into()), value.clone()))
                 .collect(),
         );
+
         let mut canonical = Vec::new();
+
         ciborium::ser::into_writer(&canonical_value, &mut canonical)
             .map_err(|error| Error::Encoding(error.to_string()))?;
         if canonical != self.payload {
             return Err(Error::NonCanonicalEncoding);
         }
-        Ok(())
+        Ok(canonical_entries)
     }
 
     /// Returns the maximum payload accepted by the frame layer.

@@ -108,6 +108,9 @@ impl FrameDecoder {
 
         self.buffer.drain(..consumed);
 
+        if self.buffer.is_empty() && self.buffer.capacity() > 64 * 1024 {
+            self.buffer.shrink_to(READ_CHUNK)
+        }
         Ok(Some(frame))
     }
 }

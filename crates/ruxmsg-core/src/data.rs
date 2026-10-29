@@ -27,7 +27,7 @@ pub struct DataPayload {
     pub ciphertext: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct DataPlaintext {
     pub content: Vec<u8>,
     pub padding: Vec<u8>,
@@ -88,14 +88,7 @@ impl DataPlaintext {
 
     /// Decodes and validates content/padding after AEAD authentication.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        Frame::new(MessageType::Data, bytes.to_vec())?.validate_cbor_map()?;
-
-        let value: Value =
-            ciborium::de::from_reader(bytes).map_err(|error| Error::Encoding(error.to_string()))?;
-
-        let Value::Map(entries) = value else {
-            return Err(Error::InvalidDataPayload);
-        };
+        let entries = Frame::new(MessageType::Data, bytes.to_vec())?.validate_cbor_map()?;
 
         if entries.len() != 2 {
             return Err(Error::InvalidDataPayload);
@@ -105,11 +98,7 @@ impl DataPlaintext {
         let mut padding = None;
 
         for (key, value) in entries {
-            let Value::Integer(key) = key else {
-                return Err(Error::InvalidDataPayload);
-            };
-
-            match u64::try_from(key).map_err(|_| Error::InvalidDataPayload)? {
+            match key {
                 0 => content = Some(bytes_value(value)?),
                 1 => padding = Some(bytes_value(value)?),
                 _ => return Err(Error::InvalidDataPayload),
@@ -173,7 +162,7 @@ impl DataSender {
         let next_counter = counter.checked_add(1).ok_or(Error::CounterOverflow)?;
 
         // 2. Prepare plaintext
-        let plaintext = DataPlaintext::padded(content)?.encode()?;
+        let plaintext = Zeroizing::new(DataPlaintext::padded(content)?.encode()?);
 
         // 3. Derive key (does not mutate self.chain_key yet)
         let (message_key, next_chain) = derive_message_key(&self.chain_key, self.direction);
@@ -279,7 +268,7 @@ impl DataReceiver {
         // VALIDATE:
         // Do not consume the message key until the authenticated plaintext
         // also satisfies the DATA payload format and padding requirements.
-        let decoded = DataPlaintext::decode(&plaintext)?;
+        let mut decoded = DataPlaintext::decode(&plaintext)?;
 
         // COMMIT:
         // This is the first point at which the message key is consumed.
@@ -290,7 +279,7 @@ impl DataReceiver {
         // window.
         self.replay.accept(payload.message_counter)?;
 
-        Ok(decoded.content)
+        Ok(std::mem::take(&mut decoded.content))
     }
 }
 
@@ -314,14 +303,7 @@ fn encode_payload(payload: DataPayload) -> Result<Frame> {
 }
 
 fn decode_payload(bytes: &[u8]) -> Result<DataPayload> {
-    Frame::new(MessageType::Data, bytes.to_vec())?.validate_cbor_map()?;
-
-    let value: Value =
-        ciborium::de::from_reader(bytes).map_err(|error| Error::Encoding(error.to_string()))?;
-
-    let Value::Map(entries) = value else {
-        return Err(Error::InvalidDataPayload);
-    };
+    let entries = Frame::new(MessageType::Data, bytes.to_vec())?.validate_cbor_map()?;
 
     if entries.len() != 4 {
         return Err(Error::InvalidDataPayload);
@@ -333,11 +315,7 @@ fn decode_payload(bytes: &[u8]) -> Result<DataPayload> {
     let mut ciphertext = None;
 
     for (key, value) in entries {
-        let Value::Integer(key) = key else {
-            return Err(Error::InvalidDataPayload);
-        };
-
-        match u64::try_from(key).map_err(|_| Error::InvalidDataPayload)? {
+        match key {
             0 => {
                 let bytes = bytes_value(value)?;
 

@@ -107,14 +107,7 @@ impl HelloPayload {
             return Err(Error::InvalidHandshake);
         }
 
-        frame.validate_cbor_map()?;
-
-        let value: Value = ciborium::de::from_reader(frame.payload.as_slice())
-            .map_err(|error| Error::Encoding(error.to_string()))?;
-
-        let Value::Map(entries) = value else {
-            return Err(Error::InvalidHandshake);
-        };
+        let entries = frame.validate_cbor_map()?;
 
         if !(7..=8).contains(&entries.len()) {
             return Err(Error::InvalidHandshake);
@@ -123,10 +116,6 @@ impl HelloPayload {
         let mut fields: Vec<Option<Value>> = (0..8).map(|_| None).collect();
 
         for (key, value) in entries {
-            let Value::Integer(key) = key else {
-                return Err(Error::InvalidHandshake);
-            };
-
             let key = usize::try_from(key).map_err(|_| Error::InvalidHandshake)?;
 
             if key >= fields.len() || fields[key].is_some() {
@@ -231,14 +220,7 @@ impl CommitPayload {
             return Err(Error::InvalidHandshake);
         }
 
-        frame.validate_cbor_map()?;
-
-        let value: Value = ciborium::de::from_reader(frame.payload.as_slice())
-            .map_err(|error| Error::Encoding(error.to_string()))?;
-
-        let Value::Map(entries) = value else {
-            return Err(Error::InvalidHandshake);
-        };
+        let entries = frame.validate_cbor_map()?;
 
         if !(4..=5).contains(&entries.len()) {
             return Err(Error::InvalidHandshake);
@@ -247,10 +229,6 @@ impl CommitPayload {
         let mut fields: Vec<Option<Value>> = (0..5).map(|_| None).collect();
 
         for (key, value) in entries {
-            let Value::Integer(key) = key else {
-                return Err(Error::InvalidHandshake);
-            };
-
             let key = usize::try_from(key).map_err(|_| Error::InvalidHandshake)?;
 
             if key >= fields.len() || fields[key].is_some() {
@@ -457,22 +435,11 @@ impl HandshakePayload {
             return Err(Error::InvalidHandshake);
         }
 
-        frame.validate_cbor_map()?;
-
-        let value: Value = ciborium::de::from_reader(frame.payload.as_slice())
-            .map_err(|error| Error::Encoding(error.to_string()))?;
-
-        let Value::Map(entries) = value else {
-            return Err(Error::InvalidHandshake);
-        };
+        let entries = frame.validate_cbor_map()?;
 
         let mut fields: Vec<Option<Value>> = (0..12).map(|_| None).collect();
 
         for (key, value) in entries {
-            let Value::Integer(key) = key else {
-                return Err(Error::InvalidHandshake);
-            };
-
             let key = usize::try_from(key).map_err(|_| Error::InvalidHandshake)?;
 
             if key >= fields.len() || fields[key].is_some() {
@@ -614,14 +581,7 @@ impl SessionConfirmPayload {
             return Err(Error::ConfirmationInvalid);
         }
 
-        frame.validate_cbor_map()?;
-
-        let value: Value = ciborium::de::from_reader(frame.payload.as_slice())
-            .map_err(|error| Error::Encoding(error.to_string()))?;
-
-        let Value::Map(entries) = value else {
-            return Err(Error::ConfirmationInvalid);
-        };
+        let entries = frame.validate_cbor_map()?;
 
         if entries.len() != 3 {
             return Err(Error::ConfirmationInvalid);
@@ -630,10 +590,6 @@ impl SessionConfirmPayload {
         let mut fields: Vec<Option<Value>> = (0..3).map(|_| None).collect();
 
         for (key, value) in entries {
-            let Value::Integer(key) = key else {
-                return Err(Error::ConfirmationInvalid);
-            };
-
             let key = usize::try_from(key).map_err(|_| Error::ConfirmationInvalid)?;
 
             if key >= fields.len() || fields[key].is_some() {

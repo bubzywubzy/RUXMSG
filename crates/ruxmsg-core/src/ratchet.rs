@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use crate::crypto::derive_message_key;
 use crate::error::{Error, Result};
-use crate::protocol::{DirectionId, MAX_SKIPPED_KEYS, REPLAY_WINDOW_SIZE};
+use crate::protocol::{DirectionId, MAX_PREPARED_KEYS, MAX_SKIPPED_KEYS, REPLAY_WINDOW_SIZE};
 use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,8 +143,14 @@ impl ReceivingChain {
 
         let gap = counter - self.next_counter;
 
-        if gap > u64::from(MAX_SKIPPED_KEYS) || self.skipped.len() >= usize::from(MAX_SKIPPED_KEYS)
-        {
+        if gap > u64::from(MAX_SKIPPED_KEYS) {
+            return Err(Error::SkippedKeyLimit);
+        }
+
+        let additional_keys =
+            usize::try_from(gap).map_err(|_| Error::SkippedKeyLimit)?;
+
+        if self.skipped.len().saturating_add(additional_keys).saturating_add(1) > MAX_PREPARED_KEYS {
             return Err(Error::SkippedKeyLimit);
         }
 
