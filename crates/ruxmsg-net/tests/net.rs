@@ -29,9 +29,13 @@ fn identity(seed: u8) -> IdentityKeypair {
 }
 
 async fn next(rx: &mut Receiver<NetEvent>) -> NetEvent {
-    timeout(Duration::from_secs(600), rx.recv())
+    next_with_timeout(rx, Duration::from_secs(30)).await
+}
+
+async fn next_with_timeout(rx: &mut Receiver<NetEvent>, wait: Duration) -> NetEvent {
+    timeout(wait, rx.recv())
         .await
-        .expect("event within the (virtual) deadline")
+        .expect("network event within the test-specific deadline")
         .expect("event channel open")
 }
 
@@ -405,7 +409,7 @@ async fn an_unanswered_sas_times_out_after_120_seconds() {
 
     let mut saw_sas = false;
     let cause = loop {
-        match next(&mut a_rx).await {
+        match next_with_timeout(&mut a_rx, Duration::from_secs(180)).await {
             NetEvent::Conn {
                 event: ConnEvent::SasRequired { .. },
                 ..

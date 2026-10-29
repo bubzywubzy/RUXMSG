@@ -12,7 +12,7 @@ use ruxmsg_core::machine::{
     CloseCause, DeadlineId, DeadlineKind, Effect, Engine, EngineState, Entropy, Event, Input,
     RekeyFailure, SendRejection,
 };
-use ruxmsg_core::protocol::{MessageType, SessionId};
+use ruxmsg_core::protocol::{MessageType, REKEY_INTERVAL_SECS, SessionId};
 use ruxmsg_core::wire::Frame;
 
 struct Seeded(u64);
@@ -262,6 +262,31 @@ fn handshake_deadlines_are_all_cancelled_once_established() {
             .values()
             .all(|(_, kind)| *kind == DeadlineKind::RekeyDue)
     );
+}
+
+#[test]
+fn the_24_hour_deadline_starts_and_completes_a_rekey() {
+    let mut sim = Sim::established();
+
+    sim.advance(secs(REKEY_INTERVAL_SECS));
+
+    assert_eq!(sim.nodes[0].engine.state(), EngineState::Active);
+    assert_eq!(sim.nodes[1].engine.state(), EngineState::Active);
+    assert_eq!(sim.count(0, Event::RekeyCompleted), 1);
+    assert_eq!(sim.count(1, Event::RekeyCompleted), 1);
+    for node in &sim.nodes {
+        assert!(
+            node.deadlines
+                .values()
+                .any(|(_, kind)| *kind == DeadlineKind::RekeyDue)
+        );
+        assert_eq!(node.engine.armed_deadlines(), node.deadlines.len());
+    }
+    assert!(sim.nodes.iter().all(|node| {
+        node.events
+            .iter()
+            .all(|event| !matches!(event, Event::Closed(_)))
+    }));
 }
 
 #[test]

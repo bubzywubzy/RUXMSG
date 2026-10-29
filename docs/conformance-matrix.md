@@ -19,7 +19,7 @@ Status meanings:
 | --- | --- | --- | --- |
 | Version, message registry, 1 MiB limit | `core/src/protocol.rs`, `core/src/wire.rs` | `core/tests/conformance.rs`, `core/tests/limits.rs` | Implemented and tested |
 | Per-type payload limits (§4.3), checked from the header | `core/src/protocol.rs`, `core/src/wire.rs`, `net/src/lib.rs` | `core/tests/limits.rs`, `net/tests/net.rs` | Implemented and tested |
-| Outer framing, truncation, partial reads | `core/src/wire.rs`, `net/src/lib.rs` (`FrameDecoder`) | `core/tests/conformance.rs`, `net/tests/net.rs` | Implemented and tested |
+| Outer framing, truncation, partial reads | `core/src/wire.rs`, `net/src/lib.rs` (`FrameDecoder`) | `core/tests/conformance.rs`, `net/tests/net.rs`, `fuzz/fuzz_targets/frame_stream.rs` | Implemented and tested; incremental decoder fuzz target added |
 | Strict deterministic CBOR (duplicate, unknown, unsorted, trailing) | `core/src/wire.rs` | `core/tests/conformance.rs` | Implemented and tested |
 | `cipher_suite` must equal 1 in COMMIT, HELLO and AUTH | `core/src/handshake.rs` | unit tests in `handshake.rs` | Implemented and tested |
 | Reserved message types rejected | `core/src/protocol.rs` | `core/tests/conformance.rs` | Implemented and tested |
@@ -64,7 +64,7 @@ Status meanings:
 | Rekey without SAS; identity continuity (D-015) | `core/src/machine.rs` | `core/tests/engine.rs` | Implemented and tested |
 | Failed or timed-out rekey returns to ACTIVE; retry after a pause | `core/src/machine.rs` | `core/tests/engine.rs` | Implemented and tested |
 | Peer-initiated rekey | `core/src/machine.rs` | `core/tests/engine.rs`, `net/tests/net.rs` | Implemented and tested |
-| Automatic rekey trigger: 24 h timer and message count | `core/src/machine.rs` | `core/tests/engine.rs` (count trigger with a lowered limit) | Implemented, gap: the 24 h timer path is exercised only through the retry timer |
+| Automatic rekey trigger: 24 h timer and message count | `core/src/machine.rs` | `core/tests/engine.rs` (timer and count triggers) | Implemented and tested |
 | Rekey glare tie-break | `core/src/machine.rs` | `core/tests/engine.rs` | Implemented and tested |
 | DATA during a rekey; drain window | `core/src/machine.rs` | `core/tests/engine.rs` | Implemented and tested |
 
@@ -101,7 +101,7 @@ Status meanings:
 | Area | Status |
 | --- | --- |
 | Hex known-answer vectors (spec §12.1) | Planned: current tests assert properties, not fixed hex values |
-| Fuzz targets (close, DATA decrypt, CBOR, frame, handshake incl. COMMIT, ratchet, engine inputs, config) | Infrastructure only: `fuzz/corpus/` is git-ignored, so no corpus or run results are recorded, and the targets are only compile-checked |
+| Fuzz targets (close, DATA decrypt, CBOR, frame/stream, handshake incl. COMMIT, ratchet, engine inputs, config) | CI is configured to compile all targets and run 100-execution smoke campaigns; `fuzz/corpus/` remains git-ignored, and no campaign results are recorded in this repository |
 | Independent implementation interoperability | External |
 | Independent security review | External |
 
