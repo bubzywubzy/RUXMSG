@@ -8,6 +8,10 @@ use std::io::{self, Write};
 /// Disables core dumps and ptrace-style memory reads where the OS allows it.
 /// Returns a warning for each step that could not be applied.
 pub(crate) fn apply() -> Vec<&'static str> {
+    #[cfg(unix)]
+    let mut warnings = Vec::new();
+
+    #[cfg(not(unix))]
     let mut warnings = Vec::new();
 
     #[cfg(unix)]
