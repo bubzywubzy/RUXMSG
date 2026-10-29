@@ -4,7 +4,9 @@ param(
     [ValidateSet('binary', 'all', 'help')]
     [string]$Mode = 'binary',
 
-    [string]$InstallDir
+    [string]$InstallDir,
+
+    [switch]$DryRun
 )
 
 Set-StrictMode -Version Latest
@@ -15,7 +17,10 @@ $BinaryName = 'ruxmsg.exe'
 $TrimChars = [char[]]@('\', '/')
 
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
-    if (-not [string]::IsNullOrWhiteSpace($env:RUXMSG_INSTALL_DIR)) {
+    if ($Mode -eq 'help') {
+        $InstallDir = [System.IO.Path]::GetTempPath()
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:RUXMSG_INSTALL_DIR)) {
         $InstallDir = $env:RUXMSG_INSTALL_DIR
     }
     else {
@@ -30,21 +35,22 @@ if ([string]::IsNullOrWhiteSpace($InstallDir)) {
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 $Destination = Join-Path $InstallDir $BinaryName
 
-# Match config.rs path resolution:
-# Use an absolute XDG_CONFIG_HOME, otherwise HOME/.config.
+# Match config.rs path resolution: only an absolute XDG_CONFIG_HOME is honored;
+# otherwise the application uses the process HOME environment variable.
+$ConfigBase = $null
 if (-not [string]::IsNullOrWhiteSpace($env:XDG_CONFIG_HOME) -and
     [System.IO.Path]::IsPathRooted($env:XDG_CONFIG_HOME)) {
     $ConfigBase = [System.IO.Path]::GetFullPath($env:XDG_CONFIG_HOME)
 }
-else {
-    $ConfigBase = [System.IO.Path]::GetFullPath(
-        (Join-Path $HOME '.config')
-    )
+elseif (-not [string]::IsNullOrWhiteSpace($env:HOME) -and
+    [System.IO.Path]::IsPathRooted($env:HOME)) {
+    $ConfigBase = [System.IO.Path]::GetFullPath((Join-Path $env:HOME '.config'))
 }
 
-$ConfigDir = [System.IO.Path]::GetFullPath(
-    (Join-Path $ConfigBase 'ruxmsg')
-)
+$ConfigDir = $null
+if ($null -ne $ConfigBase) {
+    $ConfigDir = [System.IO.Path]::GetFullPath((Join-Path $ConfigBase 'ruxmsg'))
+}
 
 function Write-Info {
     param([Parameter(Mandatory)][string]$Message)
@@ -81,7 +87,10 @@ function Write-Banner {
 }
 
 function Test-SafeTarget {
-    param([Parameter(Mandatory)][string]$Path)
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][ValidateSet('File', 'Directory')][string]$Kind
+    )
 
     $FullPath = [System.IO.Path]::GetFullPath($Path)
     $Root = [System.IO.Path]::GetPathRoot($FullPath)
@@ -92,6 +101,25 @@ function Test-SafeTarget {
         [System.StringComparison]::OrdinalIgnoreCase
     )) {
         Stop-Uninstall "Refusing to remove a filesystem root: $FullPath"
+    }
+
+    # Refuse junctions/symlinks in any existing path component, not only the
+    # final target. This keeps validation and displayed paths aligned.
+    $Current = $Root
+    $Relative = $FullPath.Substring($Root.Length)
+    $Components = $Relative -split '[\\/]'
+    foreach ($Component in $Components) {
+        if ([string]::IsNullOrWhiteSpace($Component)) {
+            continue
+        }
+
+        $Current = Join-Path $Current $Component
+        if (Test-Path -LiteralPath $Current) {
+            $Ancestor = Get-Item -LiteralPath $Current -Force
+            if (($Ancestor.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Stop-Uninstall "Refusing a path containing a symbolic link or reparse point: $Current"
+            }
+        }
     }
 
     if (Test-Path -LiteralPath $FullPath) {
@@ -105,20 +133,36 @@ function Test-SafeTarget {
             $Item -isnot [System.IO.DirectoryInfo]) {
             Stop-Uninstall "Refusing unexpected filesystem object: $FullPath"
         }
+
+        if ($Kind -eq 'File' -and $Item -isnot [System.IO.FileInfo]) {
+            Stop-Uninstall "Refusing to remove a non-file executable target: $FullPath"
+        }
+
+        if ($Kind -eq 'Directory' -and $Item -isnot [System.IO.DirectoryInfo]) {
+            Stop-Uninstall "Refusing to remove a non-directory configuration target: $FullPath"
+        }
     }
 }
 
 function Remove-Target {
-    param([Parameter(Mandatory)][string]$Path)
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][ValidateSet('File', 'Directory')][string]$Kind
+    )
 
-    Test-SafeTarget -Path $Path
+    Test-SafeTarget -Path $Path -Kind $Kind
 
     if (-not (Test-Path -LiteralPath $Path)) {
         Write-Warn "Not present; skipping: $Path"
         return
     }
 
-    Remove-Item -LiteralPath $Path -Recurse -Force
+    if ($Kind -eq 'File') {
+        Remove-Item -LiteralPath $Path -Force
+    }
+    else {
+        Remove-Item -LiteralPath $Path -Recurse -Force
+    }
 
     if (Test-Path -LiteralPath $Path) {
         Stop-Uninstall "Removal verification failed: $Path"
@@ -140,11 +184,13 @@ Usage:
   .\uninstall.ps1
   .\uninstall.ps1 -Mode binary
   .\uninstall.ps1 -Mode all
+    .\uninstall.ps1 -Mode all -DryRun
   .\uninstall.ps1 -Mode help
 
 Parameters:
   -Mode binary     Remove only ruxmsg.exe (default).
   -Mode all        Remove ruxmsg.exe and the default config directory.
+    -DryRun          Show validated targets without changing files or prompting.
   -InstallDir      Override the installation directory.
 
 Environment:
@@ -170,11 +216,15 @@ try {
     Write-Host "  Executable: $Destination"
 
     # Validate the executable path before requesting confirmation.
-    Test-SafeTarget -Path $Destination
+    Test-SafeTarget -Path $Destination -Kind File
 
     $Targets = @($Destination)
 
     if ($Mode -eq 'all') {
+        if ([string]::IsNullOrWhiteSpace($ConfigDir)) {
+            Stop-Uninstall 'The application has no resolved default config path in this environment; refusing all-mode removal.'
+        }
+
         $ConfigFull = [System.IO.Path]::GetFullPath($ConfigDir)
         $HomeFull = [System.IO.Path]::GetFullPath($HOME)
         $ConfigRoot = [System.IO.Path]::GetPathRoot($ConfigFull)
@@ -237,7 +287,7 @@ try {
             Stop-Uninstall "Configuration path did not pass validation: $ConfigFull"
         }
 
-        Test-SafeTarget -Path $ConfigFull
+        Test-SafeTarget -Path $ConfigFull -Kind Directory
         $Targets += $ConfigFull
 
         Write-Host ''
@@ -252,6 +302,11 @@ try {
         Write-Warn 'Identity credentials in Windows Credential Manager are NOT removed.'
         Write-Warn 'Custom --config paths, repository files, and build artifacts are retained.'
 
+        if ($DryRun) {
+            Write-Info 'Dry run: no files were changed.'
+            exit 0
+        }
+
         if (-not (Confirm-Removal 'Permanently remove the listed targets? [y/N]')) {
             Write-Info 'Removal cancelled.'
             exit 0
@@ -259,6 +314,11 @@ try {
     }
     else {
         Write-Host ''
+
+        if ($DryRun) {
+            Write-Info 'Dry run: no files were changed.'
+            exit 0
+        }
         Write-Host 'This removes only the installed executable.'
         Write-Host 'Configuration, credentials, and repository files will be retained.'
         Write-Host ''
@@ -270,11 +330,11 @@ try {
     }
 
     Write-Info 'Removing installed executable'
-    Remove-Target -Path $Destination
+    Remove-Target -Path $Destination -Kind File
 
     if ($Mode -eq 'all') {
         Write-Info 'Removing default configuration directory'
-        Remove-Target -Path $ConfigDir
+        Remove-Target -Path $ConfigDir -Kind Directory
     }
 
     Write-Host ''

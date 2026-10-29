@@ -6,14 +6,45 @@ umask 022
 readonly APP_NAME="RUXMSG"
 readonly BINARY_NAME="ruxmsg"
 
-readonly SCRIPT_DIR="$(
-    cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
-    pwd -P
-)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
+readonly REPO_ROOT
 
-readonly INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-readonly CARGO_TOML="${SCRIPT_DIR}/Cargo.toml"
-readonly CARGO_LOCK="${SCRIPT_DIR}/Cargo.lock"
+normalize_path() {
+    local path="$1"
+    local current="/"
+    local component
+    local candidate
+    local -a parts=()
+
+    [[ "$path" == /* ]] || return 1
+    IFS='/' read -r -a parts <<< "$path"
+    for component in "${parts[@]}"; do
+        case "$component" in
+            ""|.) continue ;;
+            ..) current="$(dirname -- "$current")" ;;
+            *)
+                candidate="${current%/}/${component}"
+                if [[ -d "$current" && -d "$candidate" ]]; then
+                    current="$(cd -P -- "$candidate" && pwd -P)"
+                else
+                    current="$candidate"
+                fi
+                ;;
+        esac
+    done
+    printf '%s\n' "$current"
+}
+
+INSTALL_DIR="$(normalize_path "${INSTALL_DIR:-/usr/local/bin}")" || {
+    printf '[ERROR] INSTALL_DIR must resolve from an absolute path.\n' >&2
+    exit 1
+}
+readonly INSTALL_DIR
+readonly CARGO_TOML="${REPO_ROOT}/Cargo.toml"
+readonly CARGO_LOCK="${REPO_ROOT}/Cargo.lock"
+readonly TARGET_DIR="${REPO_ROOT}/target"
 
 STAGED_BINARY=""
 
@@ -85,15 +116,49 @@ cleanup() {
 
 trap cleanup EXIT
 
+# ---------- Options ----------
+
+usage() {
+        cat <<EOF
+Usage: INSTALL_DIR=/path ./scripts/install.sh [--help|--check|--dry-run]
+
+Build and install the RUXMSG executable from this checkout using Cargo --locked.
+
+Options:
+    -h, --help   Show this help and exit.
+    --check      Check prerequisites and paths without building or changing files.
+    --dry-run    Show the build/install actions without changing files.
+
+Environment:
+    INSTALL_DIR  Installation directory (default: /usr/local/bin).
+
+The installation directory is not added to PATH automatically.
+EOF
+}
+
+MODE="install"
+if [[ "$#" -gt 1 ]]; then
+        die "Specify at most one option. Use --help for usage."
+fi
+case "${1:-}" in
+        "") ;;
+        -h|--help) usage; exit 0 ;;
+        --check) MODE="check" ;;
+        --dry-run) MODE="dry-run" ;;
+        *) die "Unknown option: $1. Use --help for usage." ;;
+esac
+
 # ---------- Validation ----------
 
-banner
+[[ "$MODE" == "install" ]] && banner
 
 [[ "${EUID}" -ne 0 ]] ||
     die "Do not run this installer as root. Run ./install.sh normally."
 
 [[ "${INSTALL_DIR}" == /* && "${INSTALL_DIR}" != "/" ]] ||
     die "INSTALL_DIR must be an absolute path other than /."
+[[ ! -e "${INSTALL_DIR}" || -d "${INSTALL_DIR}" ]] ||
+    die "Installation path is not a directory: ${INSTALL_DIR}"
 
 [[ -f "${CARGO_TOML}" ]] ||
     die "Cargo.toml was not found. Run this script from the RUXMSG repository."
@@ -124,9 +189,44 @@ HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
     die "Could not determine the Rust host target."
 
 readonly HOST_TARGET
-readonly TARGET_DIR="${SCRIPT_DIR}/target"
 readonly BINARY_PATH="${TARGET_DIR}/${HOST_TARGET}/release/${BINARY_NAME}"
 readonly DESTINATION="${INSTALL_DIR}/${BINARY_NAME}"
+
+validate_destination() {
+    if [[ -L "$DESTINATION" ]]; then
+        die "Refusing to replace a symbolic link: $DESTINATION"
+    elif [[ -e "$DESTINATION" && ! -f "$DESTINATION" ]]; then
+        die "Refusing to replace a non-regular file: $DESTINATION"
+    fi
+}
+
+validate_destination
+
+probe_dir="$INSTALL_DIR"
+while [[ ! -d "$probe_dir" ]]; do
+    probe_dir="$(dirname -- "$probe_dir")"
+done
+if [[ ! -w "$probe_dir" || ! -x "$probe_dir" ]]; then
+    command -v sudo >/dev/null 2>&1 ||
+        die "No write access to ${INSTALL_DIR} and sudo is unavailable."
+fi
+
+if [[ "$MODE" == "check" ]]; then
+    success "Prerequisites and paths are valid"
+    printf '  Repository : %s\n' "$REPO_ROOT"
+    printf '  Target     : %s\n' "$HOST_TARGET"
+    printf '  Destination: %s\n' "$DESTINATION"
+    printf '  Cargo.lock : %s\n' "$CARGO_LOCK"
+    exit 0
+fi
+
+if [[ "$MODE" == "dry-run" ]]; then
+    info "Dry run: no files will be changed"
+    printf '  Build      : cargo build --release --locked --bin %s --target %s\n' "$BINARY_NAME" "$HOST_TARGET"
+    printf '  Target dir : %s\n' "$TARGET_DIR"
+    printf '  Destination: %s\n' "$DESTINATION"
+    exit 0
+fi
 
 # ---------- Build ----------
 
@@ -171,9 +271,11 @@ fi
 
 # Stage in the destination directory so the final rename stays
 # on the same filesystem. Never overwrite the live executable in place.
+validate_destination
 if [[ -w "${INSTALL_DIR}" ]]; then
     STAGED_BINARY="$(mktemp "${INSTALL_DIR}/.ruxmsg.XXXXXXXX")"
     install -m 755 -- "${BINARY_PATH}" "${STAGED_BINARY}"
+    validate_destination
     mv -f -- "${STAGED_BINARY}" "${DESTINATION}"
     STAGED_BINARY=""
 else
@@ -182,6 +284,7 @@ else
 
     STAGED_BINARY="$(sudo mktemp "${INSTALL_DIR}/.ruxmsg.XXXXXXXX")"
     sudo install -m 755 -- "${BINARY_PATH}" "${STAGED_BINARY}"
+    validate_destination
     sudo mv -f -- "${STAGED_BINARY}" "${DESTINATION}"
     STAGED_BINARY=""
 fi

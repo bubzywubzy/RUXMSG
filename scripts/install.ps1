@@ -1,7 +1,13 @@
 
 [CmdletBinding()]
 param(
-    [string]$InstallDir
+    [string]$InstallDir,
+
+    [switch]$Check,
+
+    [switch]$DryRun,
+
+    [switch]$Help
 )
 
 Set-StrictMode -Version Latest
@@ -10,12 +16,16 @@ $ErrorActionPreference = 'Stop'
 $AppName = 'RUXMSG'
 $BinaryName = 'ruxmsg.exe'
 $ScriptDir = $PSScriptRoot
-$ManifestPath = Join-Path $ScriptDir 'Cargo.toml'
-$LockPath = Join-Path $ScriptDir 'Cargo.lock'
-$TargetDir = Join-Path $ScriptDir 'target'
+$RepoRoot = Split-Path -Parent $ScriptDir
+$ManifestPath = Join-Path $RepoRoot 'Cargo.toml'
+$LockPath = Join-Path $RepoRoot 'Cargo.lock'
+$TargetDir = Join-Path $RepoRoot 'target'
 
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
-    if (-not [string]::IsNullOrWhiteSpace($env:RUXMSG_INSTALL_DIR)) {
+    if ($Help) {
+        $InstallDir = [System.IO.Path]::GetTempPath()
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:RUXMSG_INSTALL_DIR)) {
         $InstallDir = $env:RUXMSG_INSTALL_DIR
     }
     else {
@@ -31,6 +41,26 @@ $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 $Destination = Join-Path $InstallDir $BinaryName
 $StagedBinary = $null
 $BackupBinary = $null
+
+function Show-Help {
+        @'
+Usage:
+    .\scripts\install.ps1 [-InstallDir <path>] [-Check | -DryRun | -Help]
+
+Build and install RUXMSG from this checkout using Cargo --locked.
+
+Options:
+    -InstallDir <path>  Installation directory.
+    -Check              Validate prerequisites and paths without building/changing files.
+    -DryRun             Show build/install actions without changing files.
+    -Help               Show this help.
+
+Environment:
+    RUXMSG_INSTALL_DIR  Installation-directory override (used if -InstallDir is absent).
+
+The installation directory is not added to PATH automatically.
+'@ | Write-Host
+}
 
 function Write-Info {
     param([Parameter(Mandatory)][string]$Message)
@@ -52,6 +82,29 @@ function Stop-Install {
     throw $Message
 }
 
+function Test-NoReparsePath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $FullPath = [System.IO.Path]::GetFullPath($Path)
+    $Root = [System.IO.Path]::GetPathRoot($FullPath)
+    $Current = $Root
+    $Relative = $FullPath.Substring($Root.Length)
+
+    foreach ($Component in ($Relative -split '[\\/]')) {
+        if ([string]::IsNullOrWhiteSpace($Component)) {
+            continue
+        }
+
+        $Current = Join-Path $Current $Component
+        if (Test-Path -LiteralPath $Current) {
+            $Item = Get-Item -LiteralPath $Current -Force
+            if (($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Stop-Install "Refusing an installation path containing a reparse point: $Current"
+            }
+        }
+    }
+}
+
 function Write-Banner {
     Write-Host ''
     Write-Host '██████╗  ██╗   ██╗ ██╗  ██╗ ███╗   ███╗ ███████╗  ██████╗' -ForegroundColor Cyan
@@ -67,20 +120,32 @@ function Write-Banner {
 }
 
 function Remove-StagingFiles {
-    foreach ($Path in @($StagedBinary, $BackupBinary)) {
-        if (-not [string]::IsNullOrWhiteSpace($Path) -and
-            (Test-Path -LiteralPath $Path -PathType Leaf)) {
-            try {
-                Remove-Item -LiteralPath $Path -Force
-            }
-            catch {
-                Write-Warn "Could not clean up temporary file: $Path"
-            }
+    if (-not [string]::IsNullOrWhiteSpace($StagedBinary) -and
+        (Test-Path -LiteralPath $StagedBinary -PathType Leaf)) {
+        try {
+            Remove-Item -LiteralPath $StagedBinary -Force
         }
+        catch {
+            Write-Warn "Could not clean up temporary file: $StagedBinary"
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($BackupBinary) -and
+        (Test-Path -LiteralPath $BackupBinary -PathType Leaf)) {
+        Write-Warn "A recovery backup was retained at: $BackupBinary"
     }
 }
 
 try {
+    if ($Help) {
+        Show-Help
+        exit 0
+    }
+
+    if ($Check -and $DryRun) {
+        Stop-Install 'Choose either -Check or -DryRun, not both.'
+    }
+
     Write-Banner
 
     if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
@@ -108,6 +173,12 @@ try {
         Stop-Install 'Refusing to use a filesystem root as the installation directory.'
     }
 
+    if (Test-Path -LiteralPath $InstallDir -PathType Leaf) {
+        Stop-Install "Installation path is a file, not a directory: $InstallDir"
+    }
+
+    Test-NoReparsePath -Path $InstallDir
+
     # Determine the host target to avoid accidental cross-compilation.
     $RustInfo = & rustc -vV
 
@@ -128,8 +199,34 @@ try {
         Join-Path $HostTarget (Join-Path 'release' $BinaryName)
     )
 
+    if (Test-Path -LiteralPath $Destination) {
+        $Existing = Get-Item -LiteralPath $Destination -Force
+
+        if ($Existing -isnot [System.IO.FileInfo] -or
+            (($Existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            Stop-Install "Refusing to replace a non-regular file or reparse point: $Destination"
+        }
+    }
+
+    if ($Check) {
+        Write-Success 'Prerequisites and paths are valid'
+        Write-Host "  Repository : $RepoRoot"
+        Write-Host "  Target     : $HostTarget"
+        Write-Host "  Destination: $Destination"
+        Write-Host "  Cargo.lock : $LockPath"
+        exit 0
+    }
+
+    if ($DryRun) {
+        Write-Info 'Dry run: no files will be changed'
+        Write-Host "  Build      : cargo build --release --locked --bin ruxmsg --target $HostTarget"
+        Write-Host "  Target dir : $TargetDir"
+        Write-Host "  Destination: $Destination"
+        exit 0
+    }
+
     Write-Info "Preparing $AppName release"
-    Write-Host "  Repository : $ScriptDir"
+    Write-Host "  Repository : $RepoRoot"
     Write-Host "  Target     : $HostTarget"
     Write-Host "  Compiler   : $(& rustc --version)"
     Write-Host "  Cargo      : $(& cargo --version)"
