@@ -32,7 +32,7 @@ const RESPONDER_CONFIRM_DOMAIN: &[u8] = b"RUXMSG/1/confirm/R";
 const ZERO_SALT: [u8; 32] = [0; 32];
 const COMMIT_DOMAIN: &[u8] = b"RUXMSG/1/COMMIT";
 
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct IdentityKeypair {
     secret: [u8; 32],
 }
@@ -148,14 +148,14 @@ impl EphemeralKeypair {
         self.public
     }
 
-    /// Performs X25519 agreement and rejects an all-zero shared secret.
-    pub fn shared_secret(&self, remote_public: &[u8; 32]) -> Result<[u8; 32]> {
+    /// Performs X25519 agreement and rejects a non-contributory shared secret.
+    pub fn shared_secret(&self, remote_public: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>> {
         let secret = StaticSecret::from(self.secret);
         let shared = secret.diffie_hellman(&X25519PublicKey::from(*remote_public));
-        if shared.as_bytes().iter().all(|byte| *byte == 0) {
+        if !shared.was_contributory() {
             return Err(Error::AllZeroSharedSecret);
         }
-        Ok(shared.to_bytes())
+        Ok(Zeroizing::new(shared.to_bytes()))
     }
 }
 

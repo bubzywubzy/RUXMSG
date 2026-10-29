@@ -96,7 +96,6 @@ impl ReplayWindow {
     }
 }
 
-#[derive(Debug, Clone)]
 pub struct ReceivingChain {
     chain_key: Zeroizing<[u8; 32]>,
     next_counter: u64,
@@ -106,6 +105,17 @@ pub struct ReceivingChain {
     skipped: BTreeMap<u64, Zeroizing<[u8; 32]>>,
 
     direction: DirectionId,
+}
+
+impl std::fmt::Debug for ReceivingChain {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReceivingChain")
+            .field("next_counter", &self.next_counter)
+            .field("skipped_len", &self.skipped.len())
+            .field("direction", &self.direction)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ReceivingChain {
@@ -123,10 +133,10 @@ impl ReceivingChain {
     ///
     /// Keys remain retained until `commit_message_key()` is called after
     /// successful authentication and plaintext validation.
-    pub fn prepare_message_key(&mut self, counter: u64) -> Result<[u8; 32]> {
+    pub fn prepare_message_key(&mut self, counter: u64) -> Result<Zeroizing<[u8; 32]>> {
         // Do not remove the key here. Authentication may still fail.
         if let Some(key) = self.skipped.get(&counter) {
-            return Ok(**key);
+            return Ok(Zeroizing::new(**key));
         }
 
         if counter < self.next_counter {
@@ -174,7 +184,7 @@ impl ReceivingChain {
         let (key, next) = derive_message_key(&self.chain_key, self.direction);
         self.chain_key = next;
         self.next_counter += 1;
-        let result = *key;
+        let result = Zeroizing::new(*key);
         self.skipped.insert(counter, key);
 
         Ok(result)

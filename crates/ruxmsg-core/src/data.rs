@@ -10,6 +10,7 @@ use ciborium::value::Value;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::crypto::{decrypt_message, derive_message_key, encrypt_message, message_nonce};
+use crate::encoding::uint;
 use crate::error::{Error, Result};
 use crate::protocol::{
     DEFAULT_PADDING_QUANTUM, DirectionId, MAX_CONTENT, MAX_FRAME_SIZE, MessageType, SessionId,
@@ -19,6 +20,29 @@ use crate::wire::Frame;
 
 const AEAD_TAG_SIZE: usize = 16;
 
+struct WipeCborBytes(Value);
+
+impl Drop for WipeCborBytes {
+    fn drop(&mut self) {
+        if let Value::Map(entries) = &mut self.0 {
+            for (_, value) in entries {
+                if let Value::Bytes(bytes) = value {
+                    bytes.zeroize();
+                }
+            }
+        }
+    }
+}
+
+const fn bstr_header_len(length: usize) -> usize {
+    match length {
+        0..=23 => 1,
+        24..=255 => 2,
+        256..=65535 => 3,
+        _ => 5,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataPayload {
     pub session_id: SessionId,
@@ -27,7 +51,7 @@ pub struct DataPayload {
     pub ciphertext: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+#[derive(PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct DataPlaintext {
     pub content: Vec<u8>,
     pub padding: Vec<u8>,
@@ -36,51 +60,54 @@ pub struct DataPlaintext {
 impl DataPlaintext {
     /// Builds zero padding so the encoded plaintext plus its AEAD tag reaches
     /// the configured padding quantum.
+    /// The CBOR header of the padding byte string grows with its length, so
+    /// searching upward finds the smallest padding that lands on the quantum.
     pub fn padded(content: &[u8]) -> Result<Self> {
+        if content.len() > MAX_CONTENT {
+            return Err(Error::DataTooLarge);
+        }
+
+        // Encode size excluding padding bytes and the padding header.
+        let fixed = Self {
+            content: content.to_vec(),
+            padding: Vec::new(),
+        }
+        .encode()?
+        .len()
+            - bstr_header_len(0);
+
         let mut padding_len = 0usize;
 
         loop {
-            let candidate = Self {
-                content: content.to_vec(),
-                padding: vec![0; padding_len],
-            };
+            let total = fixed + bstr_header_len(padding_len) + padding_len + AEAD_TAG_SIZE;
 
-            let encoded = candidate.encode()?;
-
-            let target = encoded
-                .len()
-                .checked_add(AEAD_TAG_SIZE)
-                .ok_or(Error::DataTooLarge)?;
-
-            let rounded = target.div_ceil(DEFAULT_PADDING_QUANTUM) * DEFAULT_PADDING_QUANTUM;
-
-            let next = rounded
-                .checked_sub(AEAD_TAG_SIZE)
-                .and_then(|size| size.checked_sub(encoded.len() - padding_len))
-                .ok_or(Error::DataTooLarge)?;
-
-            if next == padding_len {
-                return Ok(candidate);
+            if total.is_multiple_of(DEFAULT_PADDING_QUANTUM) {
+                break;
             }
 
-            padding_len = next;
+            padding_len += 1;
 
             if padding_len > MAX_FRAME_SIZE as usize {
                 return Err(Error::DataTooLarge);
             }
         }
+
+        Ok(Self {
+            content: content.to_vec(),
+            padding: vec![0; padding_len],
+        })
     }
 
     /// Encodes the authenticated plaintext map as deterministic CBOR.
-    pub fn encode(&self) -> Result<Vec<u8>> {
-        let value = Value::Map(vec![
+    pub fn encode(&self) -> Result<Zeroizing<Vec<u8>>> {
+        let value = WipeCborBytes(Value::Map(vec![
             (uint(0u64), Value::Bytes(self.content.clone())),
             (uint(1u64), Value::Bytes(self.padding.clone())),
-        ]);
+        ]));
 
-        let mut output = Vec::new();
+        let mut output = Zeroizing::new(Vec::new());
 
-        ciborium::ser::into_writer(&value, &mut output)
+        ciborium::ser::into_writer(&value.0, &mut *output)
             .map_err(|error| Error::Encoding(error.to_string()))?;
 
         Ok(output)
@@ -88,7 +115,7 @@ impl DataPlaintext {
 
     /// Decodes and validates content/padding after AEAD authentication.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let entries = Frame::new(MessageType::Data, bytes.to_vec())?.validate_cbor_map()?;
+        let entries = Frame::validate_cbor_map_payload(bytes)?;
 
         if entries.len() != 2 {
             return Err(Error::InvalidDataPayload);
@@ -105,15 +132,31 @@ impl DataPlaintext {
             }
         }
 
-        let padding = padding.ok_or(Error::InvalidDataPayload)?;
+        let padding = padding.map(Zeroizing::new);
+        let content = content.map(Zeroizing::new);
+        let mut padding = padding.ok_or(Error::InvalidDataPayload)?;
+        let mut content = content.ok_or(Error::InvalidDataPayload)?;
+        if content.len() > MAX_CONTENT {
+            return Err(Error::DataTooLarge);
+        }
 
         if padding.iter().any(|byte| *byte != 0) {
             return Err(Error::InvalidPadding);
         }
         Ok(Self {
-            content: content.ok_or(Error::InvalidDataPayload)?,
-            padding,
+            content: std::mem::take(&mut *content),
+            padding: std::mem::take(&mut *padding),
         })
+    }
+}
+
+impl fmt::Debug for DataPlaintext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DataPlaintext")
+            .field("content", &"REDACTED")
+            .field("padding_len", &self.padding.len())
+            .finish()
     }
 }
 
@@ -162,7 +205,7 @@ impl DataSender {
         let next_counter = counter.checked_add(1).ok_or(Error::CounterOverflow)?;
 
         // 2. Prepare plaintext
-        let plaintext = Zeroizing::new(DataPlaintext::padded(content)?.encode()?);
+        let plaintext = DataPlaintext::padded(content)?.encode()?;
 
         // 3. Derive key (does not mutate self.chain_key yet)
         let (message_key, next_chain) = derive_message_key(&self.chain_key, self.direction);
@@ -224,7 +267,7 @@ impl DataReceiver {
     ///
     /// Message-key consumption is committed only after AEAD authentication
     /// and plaintext validation both succeed.
-    pub fn decrypt(&mut self, frame: &Frame) -> Result<Vec<u8>> {
+    pub fn decrypt(&mut self, frame: &Frame) -> Result<Zeroizing<Vec<u8>>> {
         if frame.message_type != MessageType::Data {
             return Err(Error::InvalidDataPayload);
         }
@@ -279,7 +322,7 @@ impl DataReceiver {
         // window.
         self.replay.accept(payload.message_counter)?;
 
-        Ok(std::mem::take(&mut decoded.content))
+        Ok(Zeroizing::new(std::mem::take(&mut decoded.content)))
     }
 }
 
@@ -303,7 +346,7 @@ fn encode_payload(payload: DataPayload) -> Result<Frame> {
 }
 
 fn decode_payload(bytes: &[u8]) -> Result<DataPayload> {
-    let entries = Frame::new(MessageType::Data, bytes.to_vec())?.validate_cbor_map()?;
+    let entries = Frame::validate_cbor_map_payload(bytes)?;
 
     if entries.len() != 4 {
         return Err(Error::InvalidDataPayload);
@@ -374,10 +417,6 @@ fn data_aad(session_id: SessionId, direction: DirectionId, counter: u64) -> Resu
     Ok(encoded)
 }
 
-fn uint(value: impl Into<u64>) -> Value {
-    Value::Integer(value.into().into())
-}
-
 fn uint_value(value: Value) -> Result<u64> {
     let Value::Integer(value) = value else {
         return Err(Error::InvalidDataPayload);
@@ -408,7 +447,7 @@ mod tests {
 
         let frame = sender.encrypt(b"hello").unwrap();
 
-        assert_eq!(receiver.decrypt(&frame).unwrap(), b"hello");
+        assert_eq!(receiver.decrypt(&frame).unwrap().as_slice(), b"hello");
         assert_eq!(receiver.decrypt(&frame), Err(Error::ReplayRejected));
     }
 
@@ -430,7 +469,7 @@ mod tests {
         // the forged frame failed authentication.
         let valid = sender.encrypt(b"secret").unwrap();
 
-        assert_eq!(receiver.decrypt(&valid).unwrap(), b"secret");
+        assert_eq!(receiver.decrypt(&valid).unwrap().as_slice(), b"secret");
     }
 
     #[test]
@@ -454,7 +493,7 @@ mod tests {
         assert_eq!(receiver.decrypt(&tampered), Err(Error::AeadFailure));
 
         // Counter 5 was prepared and its key must still be available.
-        assert_eq!(receiver.decrypt(&frames[5]).unwrap(), b"secret");
+        assert_eq!(receiver.decrypt(&frames[5]).unwrap().as_slice(), b"secret");
     }
 
     #[test]
@@ -471,13 +510,80 @@ mod tests {
     }
 
     #[test]
+    fn receiver_rejects_authenticated_content_over_the_limit() {
+        let id = SessionId::from_bytes([7; 16]);
+        let direction = DirectionId::InitiatorToResponder;
+        let chain_key = [8; 32];
+        let (message_key, _) = derive_message_key(&chain_key, direction);
+        let plaintext = DataPlaintext {
+            content: vec![0x41; MAX_CONTENT + 1],
+            padding: Vec::new(),
+        }
+        .encode()
+        .unwrap();
+        let aad = data_aad(id, direction, 0).unwrap();
+        let ciphertext =
+            encrypt_message(&message_key, &message_nonce(direction, 0), &aad, &plaintext).unwrap();
+        let frame = encode_payload(DataPayload {
+            session_id: id,
+            direction_id: direction,
+            message_counter: 0,
+            ciphertext,
+        })
+        .unwrap();
+        let mut receiver = DataReceiver::new(id, direction, chain_key);
+
+        assert_eq!(receiver.decrypt(&frame), Err(Error::DataTooLarge));
+    }
+
+    #[test]
     fn padding_accounts_for_serialized_structure_and_tag() {
         let plaintext = DataPlaintext::padded(&[7; 31]).unwrap();
 
         let encoded = plaintext.encode().unwrap();
 
-        assert_eq!((encoded.len() + AEAD_TAG_SIZE) % DEFAULT_PADDING_QUANTUM, 0);
+        assert!((encoded.len() + AEAD_TAG_SIZE).is_multiple_of(DEFAULT_PADDING_QUANTUM));
 
         assert!(plaintext.padding.iter().all(|byte| *byte == 0));
+    }
+}
+#[cfg(test)]
+mod padding_tests {
+    use super::*;
+
+    /// Brute-force oracle: the smallest padding whose ciphertext is aligned.
+    fn minimal_total(content: &[u8]) -> usize {
+        (0..)
+            .map(|padding_len| {
+                DataPlaintext {
+                    content: content.to_vec(),
+                    padding: vec![0; padding_len],
+                }
+                .encode()
+                .unwrap()
+                .len()
+                    + AEAD_TAG_SIZE
+            })
+            .find(|total| total.is_multiple_of(DEFAULT_PADDING_QUANTUM))
+            .unwrap()
+    }
+
+    #[test]
+    fn padding_is_the_minimal_aligned_size() {
+        for length in (0..=700).chain([4_000, 65_535, MAX_CONTENT]) {
+            let content = vec![0x42; length];
+            let padded = DataPlaintext::padded(&content).unwrap();
+            let total = padded.encode().unwrap().len() + AEAD_TAG_SIZE;
+
+            assert_eq!(total, minimal_total(&content), "content length {length}");
+        }
+    }
+
+    #[test]
+    fn oversized_content_is_rejected_by_padded() {
+        assert_eq!(
+            DataPlaintext::padded(&vec![0; MAX_CONTENT + 1]),
+            Err(Error::DataTooLarge)
+        );
     }
 }

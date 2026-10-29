@@ -46,7 +46,7 @@ use ruxmsg::machine::{
     CloseCause, DeadlineId, Effect, Engine, EngineState, Entropy, Event, Input, OsEntropy,
     RekeyFailure, SendRejection,
 };
-use ruxmsg::protocol::{MAX_FRAME_SIZE, MAX_UNAUTHENTICATED_HANDSHAKES};
+use ruxmsg::protocol::MAX_UNAUTHENTICATED_HANDSHAKES;
 use ruxmsg::wire::{Frame, HEADER_SIZE};
 
 const MESSAGE_QUEUE: usize = 64;
@@ -450,11 +450,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Task<S> {
 
 // ------------------------------------------------------------------ facade
 
-/// Maximum buffered bytes in a decoder: one frame plus one read chunk.
-pub const MAX_DECODER_BUFFER: usize = HEADER_SIZE + MAX_FRAME_SIZE as usize + READ_CHUNK;
-
 pub struct Net {
-    identity: IdentityKeypair,
+    identity: Arc<IdentityKeypair>,
     events: mpsc::Sender<NetEvent>,
     next_id: Arc<AtomicU64>,
     unauthenticated: Arc<Semaphore>,
@@ -482,7 +479,7 @@ impl Net {
         let (events, receiver) = mpsc::channel(EVENT_QUEUE);
 
         let net = Self {
-            identity,
+            identity: Arc::new(identity),
             events,
             next_id: Arc::new(AtomicU64::new(1)),
             unauthenticated: Arc::new(Semaphore::new(MAX_UNAUTHENTICATED_HANDSHAKES)),
@@ -641,7 +638,7 @@ impl Net {
         let task = Task {
             id,
             stream,
-            engine: Engine::new(role, self.identity.clone(), entropy),
+            engine: Engine::with_shared_identity(role, Arc::clone(&self.identity), entropy),
             events: self.events.clone(),
             deadlines: Vec::new(),
             decoder: FrameDecoder::new(),

@@ -16,6 +16,7 @@
 //! [`Input::TransportClosed`].
 
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rand_core::{OsRng, RngCore};
@@ -31,7 +32,7 @@ use crate::data::{DataReceiver, DataSender};
 use crate::encoding::Transcript;
 use crate::error::{Error, Result};
 use crate::handshake::{
-    CommitPayload, HandshakePayload, HandshakePurpose, HandshakeType, HelloPayload, HelloRole,
+    CommitPayload, HandshakePayload, HandshakePurpose, HelloPayload, HelloRole,
     SessionConfirmPayload, local_identity_wins_rekey_glare, transcript_from_hellos,
     verify_handshake_for_role,
 };
@@ -42,6 +43,9 @@ use crate::protocol::{
     REKEY_RETRY_SECS, SAS_DECISION_TIMEOUT_SECS, SessionId,
 };
 use crate::wire::Frame;
+
+const LATE_REKEY_FRAME_GRACE: u8 = 8;
+const REKEY_REJECTION_WARNING_THRESHOLD: u8 = 3;
 
 /// Source of randomness for ephemeral keys and nonces.
 pub trait Entropy {
@@ -158,9 +162,8 @@ pub enum Event {
 pub enum RekeyFailure {
     Timeout,
     IdentityMismatch,
-    /// The COMMIT did not reference the active session.
-    Rejected,
     Invalid,
+    Repeated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,7 +272,7 @@ struct Candidate {
 
 pub struct Engine {
     role: HelloRole,
-    identity: IdentityKeypair,
+    identity: Arc<IdentityKeypair>,
     entropy: Box<dyn Entropy + Send>,
     phase: Phase,
     run: Option<Run>,
@@ -280,6 +283,8 @@ pub struct Engine {
     messages: u64,
     rekey_message_limit: u64,
     rekey_blocked: bool,
+    late_rekey_frames: u8,
+    consecutive_rekey_rejections: u8,
 }
 
 impl Engine {
@@ -287,6 +292,15 @@ impl Engine {
     pub fn new(
         role: HelloRole,
         identity: IdentityKeypair,
+        entropy: Box<dyn Entropy + Send>,
+    ) -> Self {
+        Self::with_shared_identity(role, Arc::new(identity), entropy)
+    }
+
+    /// Creates an engine sharing one identity seed with other engines.
+    pub fn with_shared_identity(
+        role: HelloRole,
+        identity: Arc<IdentityKeypair>,
         entropy: Box<dyn Entropy + Send>,
     ) -> Self {
         Self {
@@ -302,6 +316,8 @@ impl Engine {
             messages: 0,
             rekey_message_limit: REKEY_MESSAGE_LIMIT,
             rekey_blocked: false,
+            late_rekey_frames: 0,
+            consecutive_rekey_rejections: 0,
         }
     }
 
@@ -758,7 +774,7 @@ impl Engine {
 
                 let confirm = SessionConfirmPayload {
                     session_id: keys.session_id,
-                    role: 0,
+                    role: HelloRole::Initiator,
                     confirmation: confirmation_mac(&keys.confirmation_key, &hash, true),
                 };
 
@@ -785,7 +801,7 @@ impl Engine {
                     .ok_or(Error::InvalidStateTransition)?;
 
                 let response = HandshakePayload {
-                    handshake_type: HandshakeType::try_from(u64::from(transcript.handshake_type))?,
+                    purpose: transcript.purpose,
                     stage: 1,
                     cipher_suite: transcript.cipher_suite,
                     initiator_identity: transcript.initiator_identity,
@@ -813,7 +829,7 @@ impl Engine {
                 let keys = run.keys.take().ok_or(Error::InvalidStateTransition)?;
                 let hash = run.hash.ok_or(Error::InvalidStateTransition)?;
 
-                confirm.verify_from(&keys, &hash, 1)?;
+                confirm.verify_from(&keys, &hash, HelloRole::Responder)?;
 
                 Self::candidate(run, keys).map(Some)
             }
@@ -823,11 +839,11 @@ impl Engine {
                 let keys = run.keys.take().ok_or(Error::InvalidStateTransition)?;
                 let hash = run.hash.ok_or(Error::InvalidStateTransition)?;
 
-                confirm.verify_from(&keys, &hash, 0)?;
+                confirm.verify_from(&keys, &hash, HelloRole::Initiator)?;
 
                 let reply = SessionConfirmPayload {
                     session_id: keys.session_id,
-                    role: 1,
+                    role: HelloRole::Responder,
                     confirmation: confirmation_mac(&keys.confirmation_key, &hash, false),
                 };
 
@@ -872,7 +888,7 @@ impl Engine {
         let hash = transcript_hash(&transcript.encode()?);
         let shared = run.ephemeral.shared_secret(&remote.ephemeral_public_key)?;
 
-        run.shared = Some(Zeroizing::new(shared));
+        run.shared = Some(shared);
         run.transcript = Some(transcript);
         run.hash = Some(hash);
         run.remote_identity = Some(remote.identity_public_key);
@@ -914,7 +930,7 @@ impl Engine {
         match run.role {
             HelloRole::Initiator => {
                 let auth = HandshakePayload {
-                    handshake_type: HandshakeType::try_from(u64::from(transcript.handshake_type))?,
+                    purpose: transcript.purpose,
                     stage: 0,
                     cipher_suite: transcript.cipher_suite,
                     initiator_identity: transcript.initiator_identity,
@@ -991,6 +1007,8 @@ impl Engine {
         ));
         self.phase = Phase::Established;
         self.messages = 0;
+        self.late_rekey_frames = 0;
+        self.consecutive_rekey_rejections = 0;
 
         self.arm(
             DeadlineKind::RekeyDue,
@@ -1034,6 +1052,8 @@ impl Engine {
 
         self.messages = 0;
         self.rekey_blocked = false;
+        self.late_rekey_frames = 0;
+        self.consecutive_rekey_rejections = 0;
 
         out.push(Effect::Notify(Event::RekeyCompleted));
     }
@@ -1066,23 +1086,24 @@ impl Engine {
 
     fn on_rekey_frame(&mut self, frame: Frame, out: &mut Vec<Effect>) {
         let Some(run) = self.run.as_ref() else {
-            // Only a COMMIT may open a rekey; anything else is out of sequence.
-            if frame.message_type != MessageType::Rekey {
+            if self.late_rekey_frames > 0 {
+                self.late_rekey_frames -= 1;
+                return;
+            }
+
+            if frame.message_type == MessageType::Rekey {
+                match CommitPayload::decode(&frame) {
+                    Ok(commit) => self.on_incoming_commit(commit, out),
+                    Err(_) => self.note_rekey_rejection(out),
+                }
+            } else if frame.message_type == MessageType::SessionConfirm {
                 self.terminate(
                     CloseCause::ProtocolError,
                     Some(CloseReason::ProtocolError),
                     out,
                 );
-                return;
-            }
-
-            match CommitPayload::decode(&frame) {
-                Ok(commit) => self.on_incoming_commit(commit, out),
-                Err(_) => self.terminate(
-                    CloseCause::ProtocolError,
-                    Some(CloseReason::ProtocolError),
-                    out,
-                ),
+            } else {
+                self.note_rekey_rejection(out);
             }
 
             return;
@@ -1112,10 +1133,11 @@ impl Engine {
             || commit.purpose != HandshakePurpose::Rekey
             || !references_active
         {
-            out.push(Effect::Notify(Event::RekeyFailed(RekeyFailure::Rejected)));
+            self.note_rekey_rejection(out);
             return;
         }
 
+        self.consecutive_rekey_rejections = 0;
         if let Err(error) = self.start_responder_run(commit, out) {
             self.fail_rekey(&error, out);
         }
@@ -1128,7 +1150,7 @@ impl Engine {
         };
 
         if commit.previous_session_id != self.run.as_ref().and_then(|run| run.previous) {
-            out.push(Effect::Notify(Event::RekeyFailed(RekeyFailure::Rejected)));
+            self.note_rekey_rejection(out);
             return;
         }
 
@@ -1148,6 +1170,7 @@ impl Engine {
     /// and a later attempt is allowed after a pause (§8.4).
     fn fail_rekey(&mut self, error: &Error, out: &mut Vec<Effect>) {
         self.run = None;
+        self.late_rekey_frames = LATE_REKEY_FRAME_GRACE;
 
         self.cancel(DeadlineKind::HandshakeFrame, out);
         self.cancel(DeadlineKind::HandshakeTotal, out);
@@ -1166,6 +1189,15 @@ impl Engine {
         };
 
         out.push(Effect::Notify(Event::RekeyFailed(failure)));
+    }
+
+    fn note_rekey_rejection(&mut self, out: &mut Vec<Effect>) {
+        if self.consecutive_rekey_rejections < REKEY_REJECTION_WARNING_THRESHOLD {
+            self.consecutive_rekey_rejections += 1;
+            if self.consecutive_rekey_rejections == REKEY_REJECTION_WARNING_THRESHOLD {
+                out.push(Effect::Notify(Event::RekeyFailed(RekeyFailure::Repeated)));
+            }
+        }
     }
 
     fn fail_initial(&mut self, error: &Error, out: &mut Vec<Effect>) {
@@ -1230,7 +1262,7 @@ impl Engine {
 
         match active.receiver.decrypt(frame) {
             Ok(plaintext) => {
-                out.push(Effect::Deliver(Zeroizing::new(plaintext)));
+                out.push(Effect::Deliver(plaintext));
                 self.messages = self.messages.saturating_add(1);
                 self.maybe_trigger_rekey(out);
             }
@@ -1238,7 +1270,7 @@ impl Engine {
                 if let Some(draining) = self.draining.as_mut()
                     && let Ok(plaintext) = draining.receiver.decrypt(frame)
                 {
-                    out.push(Effect::Deliver(Zeroizing::new(plaintext)));
+                    out.push(Effect::Deliver(plaintext));
                     return;
                 }
 
@@ -1336,7 +1368,7 @@ fn is_malformed(error: &Error) -> bool {
             | Error::DuplicateMapKey(_)
             | Error::InvalidLength { .. }
             | Error::InvalidFrameLength(_)
-            | Error::TrailingFrameBytes
             | Error::TruncatedFrame
+            | Error::DataTooLarge
     )
 }

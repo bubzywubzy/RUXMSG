@@ -60,6 +60,7 @@ pub(crate) struct Peer {
     pub(crate) status: PeerStatus,
     pub(crate) fingerprint: Option<String>,
     pub(crate) rekeying: bool,
+    pub(crate) last_data_rejection_notice: Option<Instant>,
     pub(crate) scrollback: Scrollback,
     pub(crate) unread: usize,
     pub(crate) close_note: Option<String>,
@@ -142,16 +143,17 @@ pub(crate) fn is_approval(typed: &str) -> bool {
 
 /// Converts peer bytes into display-safe text in one owned buffer.
 pub(crate) fn ingest(bytes: &[u8]) -> String {
-    let mut safe = sanitize_for_display(&String::from_utf8_lossy(bytes));
+    let lossy = Zeroizing::new(String::from_utf8_lossy(bytes).into_owned());
+    let mut safe = Zeroizing::new(sanitize_for_display(&lossy));
 
     if !safe.contains('\t') {
-        return safe;
+        return std::mem::take(&mut *safe);
     }
 
-    let spaced = safe.replace('\t', "    ");
+    let mut spaced = Zeroizing::new(safe.replace('\t', "    "));
     safe.zeroize();
 
-    spaced
+    std::mem::take(&mut *spaced)
 }
 
 fn cause_text(cause: CloseCause) -> String {
@@ -172,8 +174,10 @@ fn rekey_failure_text(failure: RekeyFailure) -> &'static str {
     match failure {
         RekeyFailure::Timeout => "rekey timed out; session unchanged",
         RekeyFailure::IdentityMismatch => "rekey rejected: identity changed; session unchanged",
-        RekeyFailure::Rejected => "rekey request ignored",
         RekeyFailure::Invalid => "rekey failed; session unchanged",
+        RekeyFailure::Repeated => {
+            "rekey failed repeatedly; session still using old keys (network or interference issue)"
+        }
     }
 }
 
@@ -494,6 +498,7 @@ impl App {
                         status: PeerStatus::Handshaking,
                         fingerprint: None,
                         rekeying: false,
+                        last_data_rejection_notice: None,
                         scrollback: Scrollback::default(),
                         unread: 0,
                         close_note: None,
@@ -538,15 +543,31 @@ impl App {
             } => {
                 let claimed = fingerprint(&peer_identity);
                 let mut outbound = false;
+                let mut rejection_result = None;
 
                 if let Some(peer) = self.peers.get_mut(&label) {
                     peer.fingerprint = Some(claimed.clone());
                     outbound = peer.outbound;
 
                     if self.sas.len() >= MAX_UNAUTHENTICATED_HANDSHAKES {
-                        let _ = peer.handle.answer_sas(false);
-                        return;
+                        rejection_result = Some(peer.handle.answer_sas(false));
                     }
+                }
+
+                if let Some(result) = rejection_result {
+                    let message = match result {
+                        Ok(()) => "SAS prompt rejected: too many verifications are already pending"
+                            .to_string(),
+                        Err(error) => format!(
+                            "too many SAS verifications are pending, and rejection could not be sent: {error:?}"
+                        ),
+                    };
+                    let notice = message;
+                    if let Some(peer) = self.peers.get_mut(&label) {
+                        peer.scrollback.push(Author::System, notice.clone());
+                    }
+                    self.say(&format!("[{label}] {notice}"));
+                    return;
                 }
 
                 self.touched = true;
@@ -631,7 +652,29 @@ impl App {
                 self.say(&format!("[{label}] {text}"));
             }
 
-            ConnEvent::DataRejected => {}
+            ConnEvent::DataRejected => {
+                let should_notify = self.peers.get_mut(&label).is_some_and(|peer| {
+                    let now = Instant::now();
+                    if peer
+                        .last_data_rejection_notice
+                        .is_some_and(|last| now.duration_since(last) < Duration::from_secs(5))
+                    {
+                        false
+                    } else {
+                        peer.last_data_rejection_notice = Some(now);
+                        peer.scrollback.push(
+                            Author::System,
+                            "an invalid or unauthenticated message was dropped".to_string(),
+                        );
+                        true
+                    }
+                });
+                if should_notify {
+                    self.say(&format!(
+                        "[{label}] dropped an invalid or unauthenticated message"
+                    ));
+                }
+            }
 
             ConnEvent::SendRejected(reason) => {
                 let text = match reason {
