@@ -1,6 +1,8 @@
 //! Configuration loader: strict schema, safe file handling, no content in errors.
 
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
 
@@ -16,6 +18,7 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+#[cfg(unix)]
 fn write(dir: &std::path::Path, text: &str, mode: u32) -> PathBuf {
     let path = dir.join("config.toml");
     fs::write(&path, text).unwrap();
@@ -215,6 +218,7 @@ fn a_missing_file_means_defaults() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_private_regular_file_loads() {
     let dir = scratch("ok");
     let path = write(&dir, "[ui]\ntick_ms = 400", 0o600);
@@ -223,6 +227,7 @@ fn a_private_regular_file_loads() {
 }
 
 #[test]
+#[cfg(unix)]
 fn files_others_can_write_are_refused() {
     for mode in [0o666, 0o662, 0o626, 0o660 | 0o020] {
         let dir = scratch(&format!("mode{mode:o}"));
@@ -233,6 +238,7 @@ fn files_others_can_write_are_refused() {
 }
 
 #[test]
+#[cfg(unix)]
 fn symlinks_are_refused_even_to_a_good_file() {
     let dir = scratch("symlink");
     let target = write(&dir, "[ui]\ntick_ms = 400", 0o600);
@@ -243,6 +249,7 @@ fn symlinks_are_refused_even_to_a_good_file() {
 }
 
 #[test]
+#[cfg(unix)]
 fn directories_and_fifos_are_refused_without_hanging() {
     let dir = scratch("special");
 
@@ -258,6 +265,7 @@ fn directories_and_fifos_are_refused_without_hanging() {
 }
 
 #[test]
+#[cfg(unix)]
 fn large_and_non_utf8_files_are_refused() {
     let dir = scratch("big");
     let path = write(&dir, &"#".repeat(MAX_CONFIG_BYTES + 1), 0o600);
@@ -271,6 +279,7 @@ fn large_and_non_utf8_files_are_refused() {
 }
 
 #[test]
+#[cfg(unix)]
 fn loading_never_modifies_the_file_or_its_directory() {
     let dir = scratch("readonly");
     let path = write(&dir, "[ui]\ntick_ms = 400", 0o600);
