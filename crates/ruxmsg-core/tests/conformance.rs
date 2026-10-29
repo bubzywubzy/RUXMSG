@@ -10,8 +10,8 @@ use ruxmsg_core::data::{DataPlaintext, DataReceiver, DataSender};
 use ruxmsg_core::encoding::Transcript;
 use ruxmsg_core::error::Error;
 use ruxmsg_core::handshake::{
-    HandshakePayload, HandshakePurpose, HandshakeType, HelloPayload, HelloRole,
-    SessionConfirmPayload, transcript_from_hellos, verify_handshake,
+    HandshakePayload, HandshakePurpose, HelloPayload, HelloRole, SessionConfirmPayload,
+    transcript_from_hellos, verify_handshake,
 };
 use ruxmsg_core::identity::PeerIdentity;
 use ruxmsg_core::protocol::{
@@ -172,10 +172,10 @@ fn cryptographic_test_vector_is_deterministic() {
         .unwrap();
 
     assert_eq!(initiator_shared, responder_shared);
-    assert_ne!(initiator_shared, [0u8; 32]);
+    assert_ne!(initiator_shared.as_ref(), &[0u8; 32]);
 
     let transcript = Transcript {
-        handshake_type: 0,
+        purpose: HandshakePurpose::Initial,
         cipher_suite: 1,
         initiator_identity: initiator_identity_public,
         responder_identity: responder_identity_public,
@@ -330,7 +330,7 @@ fn cryptographic_test_vector_is_deterministic() {
         keys.initiator_to_responder,
     );
 
-    assert_eq!(receiver.decrypt(&frame).unwrap(), plaintext);
+    assert_eq!(receiver.decrypt(&frame).unwrap().as_slice(), plaintext);
 }
 
 #[test]
@@ -515,7 +515,7 @@ fn handshake_signature_requires_current_sas_approval() {
     let responder = IdentityKeypair::from_bytes(&[2; 32]);
 
     let mut payload = HandshakePayload {
-        handshake_type: HandshakeType::Initial,
+        purpose: HandshakePurpose::Initial,
         stage: 0,
         cipher_suite: 1,
         initiator_identity: initiator.identity(),
@@ -553,7 +553,7 @@ fn session_confirmation_binds_confirmation_to_session() {
 
     let payload = SessionConfirmPayload {
         session_id,
-        role: 0,
+        role: HelloRole::Initiator,
         confirmation: confirmation_mac(&confirmation_key, &hash, true),
     };
 
@@ -733,7 +733,10 @@ fn failed_aead_does_not_burn_current_message_key() {
     // Authentication failure must not commit or destroy the ratchet key.
     // Otherwise an attacker could permanently desynchronize the receiver
     // by sending a modified ciphertext.
-    assert_eq!(receiver.decrypt(&frame).unwrap(), b"secret payload");
+    assert_eq!(
+        receiver.decrypt(&frame).unwrap().as_slice(),
+        b"secret payload"
+    );
 }
 
 #[test]
@@ -760,7 +763,10 @@ fn failed_aead_does_not_burn_future_message_key() {
 
     assert_eq!(receiver.decrypt(&tampered), Err(Error::AeadFailure));
 
-    assert_eq!(receiver.decrypt(&frames[5]).unwrap(), b"future payload");
+    assert_eq!(
+        receiver.decrypt(&frames[5]).unwrap().as_slice(),
+        b"future payload"
+    );
 }
 
 #[test]
@@ -782,7 +788,10 @@ fn wrong_direction_is_rejected_without_advancing_the_ratchet() {
 
     let valid_frame = valid_sender.encrypt(b"valid direction").unwrap();
 
-    assert_eq!(receiver.decrypt(&valid_frame).unwrap(), b"valid direction");
+    assert_eq!(
+        receiver.decrypt(&valid_frame).unwrap().as_slice(),
+        b"valid direction"
+    );
 }
 
 #[test]
@@ -795,7 +804,10 @@ fn successful_decryption_commits_key_and_rejects_replay() {
 
     let frame = sender.encrypt(b"one time message").unwrap();
 
-    assert_eq!(receiver.decrypt(&frame).unwrap(), b"one time message");
+    assert_eq!(
+        receiver.decrypt(&frame).unwrap().as_slice(),
+        b"one time message"
+    );
 
     // Once authenticated, the counter is committed to the replay window.
     assert_eq!(receiver.decrypt(&frame), Err(Error::ReplayRejected));

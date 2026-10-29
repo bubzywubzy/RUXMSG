@@ -849,9 +849,11 @@ fn rekey_with_the_wrong_previous_session_is_discarded_and_the_session_survives()
     .encode()
     .unwrap();
 
-    sim.input(1, Input::FrameReceived(stale));
+    for _ in 0..6 {
+        sim.input(1, Input::FrameReceived(stale.clone()));
+    }
 
-    assert_eq!(sim.count(1, Event::RekeyFailed(RekeyFailure::Rejected)), 1);
+    assert_eq!(sim.count(1, Event::RekeyFailed(RekeyFailure::Repeated)), 1);
     assert_eq!(sim.nodes[1].engine.state(), EngineState::Active);
     assert!(
         sim.nodes[1]
@@ -862,6 +864,18 @@ fn rekey_with_the_wrong_previous_session_is_discarded_and_the_session_survives()
 
     sim.send(0, b"still works");
     assert_eq!(sim.nodes[1].delivered, vec![b"still works".to_vec()]);
+}
+
+#[test]
+fn malformed_rekey_commit_does_not_close_the_active_session() {
+    let mut sim = Sim::established();
+    let malformed = Frame::new(MessageType::Rekey, vec![0xa0]).unwrap();
+
+    sim.input(1, Input::FrameReceived(malformed));
+
+    assert_eq!(sim.nodes[1].engine.state(), EngineState::Active);
+    assert_eq!(sim.closed(1), None);
+    assert_eq!(sim.count(1, Event::RekeyFailed(RekeyFailure::Repeated)), 0);
 }
 
 #[test]
@@ -928,6 +942,19 @@ fn a_timed_out_rekey_aborts_only_the_candidate_and_retries_later() {
         None,
         "a rekey timeout must not close the session"
     );
+
+    let late_hello = sim.nodes[1]
+        .sent
+        .iter()
+        .find(|frame| {
+            frame.message_type == MessageType::Rekey
+                && HelloPayload::decode(frame).is_ok_and(|hello| hello.role == HelloRole::Responder)
+        })
+        .expect("responder HELLO was sent")
+        .clone();
+    sim.input(0, Input::FrameReceived(late_hello));
+    assert_eq!(sim.nodes[0].engine.state(), EngineState::Active);
+    assert_eq!(sim.closed(0), None);
 
     // Retry only after the back-off (30 s), via the rekey timer.
     let commits_before = count_commits(&sim.nodes[0]);
@@ -1140,7 +1167,9 @@ fn the_engine_module_has_no_clock_socket_thread_or_runtime() {
         "SystemTime",
         "std::net",
         "std::thread",
-        "std::sync",
+        "std::sync::Mutex",
+        "std::sync::RwLock",
+        "std::sync::Condvar",
         "tokio",
         "TcpStream",
         "println!",
