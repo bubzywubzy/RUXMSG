@@ -1,6 +1,5 @@
 //! Configuration loader: strict schema, safe file handling, no content in errors.
 
-#[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
