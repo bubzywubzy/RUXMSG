@@ -93,11 +93,22 @@ impl App {
             .sas
             .front()
             .map_or(self.input.as_str(), |pending| pending.typed.as_str());
+        
+        let prompt = self.prompt_text();
+        let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
 
+        let max_len = (cols as usize).saturating_sub(prompt.len()).saturating_sub(1);
+
+        let display_line = if line.chars().count() > max_len {
+            let start = line.chars().count() - max_len;
+            line.chars().skip(start).collect::<String>()
+        } else {
+            line.to_string()
+        };
         let mut stdout = io::stdout();
         stdout.write_all(b"\r\x1b[2K")?;
-        stdout.write_all(self.prompt_text().as_bytes())?;
-        stdout.write_all(line.as_bytes())?;
+        stdout.write_all(prompt.as_bytes())?;
+        stdout.write_all(display_line.as_bytes())?;
         stdout.flush()
     }
 
