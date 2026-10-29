@@ -15,8 +15,8 @@ use ruxmsg_core::handshake::{
 };
 use ruxmsg_core::identity::PeerIdentity;
 use ruxmsg_core::protocol::{
-    DEFAULT_PADDING_QUANTUM, DirectionId, FrameLength, MAX_FRAME_SIZE, MessageType,
-    ProtocolVersion, SessionId,
+    DEFAULT_PADDING_QUANTUM, DirectionId, FrameLength, MAX_FRAME_SIZE, MAX_PREPARED_KEYS,
+    MessageType, ProtocolVersion, SessionId,
 };
 use ruxmsg_core::ratchet::{ReceivingChain, ReplayStatus, ReplayWindow};
 use ruxmsg_core::wire::Frame;
@@ -674,8 +674,12 @@ fn receiving_chain_enforces_skipped_key_limit() {
     chain.prepare_message_key(64).unwrap();
     assert_eq!(chain.skipped_len(), 65);
 
-    // Once that cache is full, another forward jump cannot be prepared.
-    assert_eq!(chain.prepare_message_key(66), Err(Error::SkippedKeyLimit));
+    // The target-key gap limit and total prepared-key limit are separate:
+    // another in-range target is accepted until the 128-key cache is full.
+    chain.prepare_message_key(66).unwrap();
+    chain.prepare_message_key(127).unwrap();
+    assert_eq!(chain.skipped_len(), MAX_PREPARED_KEYS);
+    assert_eq!(chain.prepare_message_key(128), Err(Error::SkippedKeyLimit));
 }
 
 #[test]

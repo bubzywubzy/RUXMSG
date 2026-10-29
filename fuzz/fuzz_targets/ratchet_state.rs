@@ -2,8 +2,8 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use ruxmsg::protocol::DirectionId;
-use ruxmsg::ratchet::{ReceivingChain, ReplayWindow, ReplayStatus};
+use ruxmsg::protocol::{DirectionId, MAX_PREPARED_KEYS};
+use ruxmsg::ratchet::{ReceivingChain, ReplayWindow};
 
 #[derive(Arbitrary, Debug)]
 enum RatchetOp {
@@ -27,8 +27,7 @@ fuzz_target!(|ops: Vec<RatchetOp>| {
             }
             RatchetOp::PrepareKey(counter) => {
                 let _ = chain.prepare_message_key(counter);
-                // Ensure skipped keys never exceed the MAX_SKIPPED_KEYS bound + 1 (the target)
-                assert!(chain.skipped_len() <= 65);
+                assert!(chain.skipped_len() <= MAX_PREPARED_KEYS);
             }
             RatchetOp::CommitKey(counter) => {
                 let _ = chain.commit_message_key(counter);

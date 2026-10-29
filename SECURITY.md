@@ -66,7 +66,7 @@ Once a session is `ACTIVE`, the peer's `PeerIdentity` is pinned for the life of 
 Every untrusted input is strictly bounded prior to allocation or state mutation[cite: 3, 5]:
 
 - **Frame headers:** Checked in 6 bytes. Max payloads: `HANDSHAKE` / `REKEY` = 1,024 B; `SESSION_CONFIRM` = 128 B; `CLOSE` = 256 B (`detail` ≤ 128 B UTF-8); `DATA` = 1 MiB (max plaintext content = 64 KiB)[cite: 3, 5, 9].
-- **Ratchet & Replay:** 64-message sliding replay bitmap; max 64 skipped keys per gap; hard ceiling of 65 cached keys in `ReceivingChain` (spec allows up to 128)[cite: 3, 5, 9].
+- **Ratchet & Replay:** 64-message sliding replay bitmap; max 64 skipped keys per derivation gap; hard ceiling of 128 prepared keys in `ReceivingChain`, including target keys [cite: 3, 5, 9].
 - **Timeouts:** 15 s TCP connect/write timeout; 15 s per-frame handshake read timeout (paused during the human SAS window); 120 s SAS decision timeout; 180 s total handshake/rekey timeout; 15 s old-session drain window; 30 s backoff before retrying a failed rekey[cite: 2, 5, 9].
 - **Concurrency & Queues:** Max 4 concurrent unauthenticated inbound handshakes (`Semaphore`); max 4 queued SAS prompts; bounded MPSC channels (64 message, 8 control, 256 net events); scrollback capped at 1,000 entries and 256 KiB per peer (64 KiB per entry)[cite: 2, 5, 8, 9].
 - **Config loader:** Max 16 KiB, UTF-8, `O_NOFOLLOW | O_NONBLOCK` (refuses symlinks and FIFOs), must be a regular file owned by the 

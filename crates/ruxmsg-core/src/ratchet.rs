@@ -147,10 +147,15 @@ impl ReceivingChain {
             return Err(Error::SkippedKeyLimit);
         }
 
-        let additional_keys =
-            usize::try_from(gap).map_err(|_| Error::SkippedKeyLimit)?;
+        let additional_keys = usize::try_from(gap).map_err(|_| Error::SkippedKeyLimit)?;
 
-        if self.skipped.len().saturating_add(additional_keys).saturating_add(1) > MAX_PREPARED_KEYS {
+        if self
+            .skipped
+            .len()
+            .saturating_add(additional_keys)
+            .saturating_add(1)
+            > MAX_PREPARED_KEYS
+        {
             return Err(Error::SkippedKeyLimit);
         }
 
@@ -218,6 +223,18 @@ mod tests {
     }
 
     #[test]
+    fn receiving_chain_enforces_the_128_key_cache_ceiling() {
+        let mut chain = ReceivingChain::new([1; 32], DirectionId::InitiatorToResponder);
+
+        chain.prepare_message_key(64).unwrap();
+        chain.prepare_message_key(127).unwrap();
+
+        assert_eq!(chain.skipped_len(), MAX_PREPARED_KEYS);
+        assert_eq!(chain.prepare_message_key(128), Err(Error::SkippedKeyLimit));
+        assert_eq!(chain.skipped_len(), MAX_PREPARED_KEYS);
+    }
+
+    #[test]
     fn prepared_message_key_is_retained_until_commit() {
         let mut chain = ReceivingChain::new([1; 32], DirectionId::InitiatorToResponder);
 
@@ -273,7 +290,7 @@ mod proptests {
             let mut chain = ReceivingChain::new([0xBB; 32], DirectionId::ResponderToInitiator);
             for counter in counters {
                 let _ = chain.prepare_message_key(counter);
-                assert!(chain.skipped_len() <= 65);
+                assert!(chain.skipped_len() <= MAX_PREPARED_KEYS);
             }
         }
     }
