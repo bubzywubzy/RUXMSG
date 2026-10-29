@@ -93,11 +93,13 @@ impl App {
             .sas
             .front()
             .map_or(self.input.as_str(), |pending| pending.typed.as_str());
-        
+
         let prompt = self.prompt_text();
         let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
 
-        let max_len = (cols as usize).saturating_sub(prompt.len()).saturating_sub(1);
+        let max_len = (cols as usize)
+            .saturating_sub(prompt.len())
+            .saturating_sub(1);
 
         let display_line = if line.chars().count() > max_len {
             let start = line.chars().count() - max_len;
