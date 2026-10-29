@@ -6,12 +6,12 @@ use ciborium::value::Value;
 
 use crate::error::{Error, Result};
 use crate::identity::PeerIdentity;
-use crate::protocol::{ProtocolVersion, SessionId};
+use crate::protocol::{HandshakePurpose, ProtocolVersion, SessionId};
 
 /// Inputs authenticated by the RUXMSG handshake transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transcript {
-    pub handshake_type: u8,
+    pub purpose: HandshakePurpose,
     pub cipher_suite: u64,
     pub initiator_identity: PeerIdentity,
     pub responder_identity: PeerIdentity,
@@ -28,7 +28,7 @@ impl Transcript {
         let mut fields = BTreeMap::<u64, Value>::new();
         fields.insert(0, uint(ProtocolVersion::V1 as u8));
         fields.insert(1, uint(self.cipher_suite));
-        fields.insert(2, uint(self.handshake_type));
+        fields.insert(2, uint(self.purpose as u8));
         fields.insert(3, uint(0u64));
         fields.insert(4, uint(1u64));
         if let Some(session_id) = self.previous_session_id {
@@ -54,12 +54,48 @@ impl Transcript {
     }
 }
 
-fn uint(value: impl Into<u64>) -> Value {
-    Value::Integer(value.into().into())
+pub(crate) fn uint(value: impl Into<i128>) -> Value {
+    Value::Integer((value.into() as u64).into())
 }
 
-fn bytes(value: &[u8]) -> Value {
+pub(crate) fn bytes(value: &[u8]) -> Value {
     Value::Bytes(value.to_vec())
+}
+
+pub(crate) fn array_value<const N: usize>(value: Value, kind: &'static str) -> Result<[u8; N]> {
+    let Value::Bytes(bytes) = value else {
+        return Err(Error::InvalidLength {
+            kind,
+            expected: 0,
+            actual: 0,
+        });
+    };
+
+    bytes
+        .try_into()
+        .map_err(|bytes: Vec<u8>| Error::InvalidLength {
+            kind,
+            expected: N,
+            actual: bytes.len(),
+        })
+}
+
+pub(crate) fn map_into_fields(
+    entries: Vec<(u64, Value)>,
+    field_count: usize,
+    invalid: impl Fn() -> Error,
+) -> Result<Vec<Option<Value>>> {
+    let mut fields: Vec<Option<Value>> = (0..field_count).map(|_| None).collect();
+
+    for (key, value) in entries {
+        let index = usize::try_from(key).map_err(|_| invalid())?;
+        if index >= fields.len() || fields[index].is_some() {
+            return Err(invalid());
+        }
+        fields[index] = Some(value);
+    }
+
+    Ok(fields)
 }
 
 #[cfg(test)]
@@ -70,7 +106,7 @@ mod tests {
     fn transcript_encoding_is_deterministic() {
         let identity = PeerIdentity::from_bytes([1; 32]);
         let transcript = Transcript {
-            handshake_type: 0,
+            purpose: HandshakePurpose::Initial,
             cipher_suite: 1,
             initiator_identity: identity,
             responder_identity: PeerIdentity::from_bytes([2; 32]),

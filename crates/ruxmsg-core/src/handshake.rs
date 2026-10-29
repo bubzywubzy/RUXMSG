@@ -11,29 +11,12 @@ use crate::crypto::{
     SessionKeys, derive_session_keys, transcript_hash, verify_confirmation,
     verify_transcript_signature,
 };
-use crate::encoding::Transcript;
+use crate::encoding::{Transcript, array_value, bytes, map_into_fields, uint};
 use crate::error::{Error, Result};
 use crate::identity::PeerIdentity;
+pub use crate::protocol::HandshakePurpose;
 use crate::protocol::{MessageType, SessionId};
 use crate::wire::Frame;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandshakePurpose {
-    Initial = 0,
-    Rekey = 1,
-}
-
-impl TryFrom<u64> for HandshakePurpose {
-    type Error = Error;
-
-    fn try_from(value: u64) -> Result<Self> {
-        match value {
-            0 => Ok(Self::Initial),
-            1 => Ok(Self::Rekey),
-            _ => Err(Error::InvalidHandshake),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelloRole {
@@ -113,22 +96,12 @@ impl HelloPayload {
             return Err(Error::InvalidHandshake);
         }
 
-        let mut fields: Vec<Option<Value>> = (0..8).map(|_| None).collect();
-
-        for (key, value) in entries {
-            let key = usize::try_from(key).map_err(|_| Error::InvalidHandshake)?;
-
-            if key >= fields.len() || fields[key].is_some() {
-                return Err(Error::InvalidHandshake);
-            }
-
-            fields[key] = Some(value);
-        }
+        let mut fields = map_into_fields(entries, 8, || Error::InvalidHandshake)?;
 
         let protocol_version = uint_value(fields[0].take().ok_or(Error::InvalidHandshake)?)?;
 
         if protocol_version != 1 {
-            return Err(Error::UnsupportedVersion(protocol_version as u8));
+            return Err(Error::UnsupportedVersion(protocol_version));
         }
 
         let cipher_suite = uint_value(fields[1].take().ok_or(Error::InvalidHandshake)?)?;
@@ -226,22 +199,12 @@ impl CommitPayload {
             return Err(Error::InvalidHandshake);
         }
 
-        let mut fields: Vec<Option<Value>> = (0..5).map(|_| None).collect();
-
-        for (key, value) in entries {
-            let key = usize::try_from(key).map_err(|_| Error::InvalidHandshake)?;
-
-            if key >= fields.len() || fields[key].is_some() {
-                return Err(Error::InvalidHandshake);
-            }
-
-            fields[key] = Some(value);
-        }
+        let mut fields = map_into_fields(entries, 5, || Error::InvalidHandshake)?;
 
         let protocol_version = uint_value(fields[0].take().ok_or(Error::InvalidHandshake)?)?;
 
         if protocol_version != 1 {
-            return Err(Error::UnsupportedVersion(protocol_version as u8));
+            return Err(Error::UnsupportedVersion(protocol_version));
         }
 
         let cipher_suite = uint_value(fields[1].take().ok_or(Error::InvalidHandshake)?)?;
@@ -309,7 +272,7 @@ pub fn transcript_from_hellos(
     }
 
     Ok(Transcript {
-        handshake_type: initiator.purpose as u8,
+        purpose: initiator.purpose,
         cipher_suite: initiator.cipher_suite,
         initiator_identity: initiator.identity_public_key,
         responder_identity: responder.identity_public_key,
@@ -321,30 +284,12 @@ pub fn transcript_from_hellos(
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandshakeType {
-    Initial = 0,
-    Rekey = 1,
-}
-
-impl TryFrom<u64> for HandshakeType {
-    type Error = Error;
-
-    fn try_from(value: u64) -> Result<Self> {
-        match value {
-            0 => Ok(Self::Initial),
-            1 => Ok(Self::Rekey),
-            _ => Err(Error::InvalidHandshake),
-        }
-    }
-}
-
 /// Transcript-bound authentication payload exchanged after HELLOs.
 /// Stage 0 carries the initiator signature; stage 1 adds the responder
 /// signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandshakePayload {
-    pub handshake_type: HandshakeType,
+    pub purpose: HandshakePurpose,
     pub stage: u8,
     pub cipher_suite: u64,
     pub initiator_identity: PeerIdentity,
@@ -362,7 +307,7 @@ impl HandshakePayload {
     /// Returns the transcript fields covered by the handshake signatures.
     pub fn transcript(&self) -> Transcript {
         Transcript {
-            handshake_type: self.handshake_type as u8,
+            purpose: self.purpose,
             cipher_suite: self.cipher_suite,
             initiator_identity: self.initiator_identity,
             responder_identity: self.responder_identity,
@@ -384,16 +329,16 @@ impl HandshakePayload {
             return Err(Error::InvalidHandshake);
         }
 
-        if self.handshake_type == HandshakeType::Initial && self.previous_session_id.is_some() {
+        if self.purpose == HandshakePurpose::Initial && self.previous_session_id.is_some() {
             return Err(Error::InvalidHandshake);
         }
 
-        if self.handshake_type == HandshakeType::Rekey && self.previous_session_id.is_none() {
+        if self.purpose == HandshakePurpose::Rekey && self.previous_session_id.is_none() {
             return Err(Error::InvalidHandshake);
         }
 
         let mut entries = vec![
-            (uint(0), uint(self.handshake_type as u8)),
+            (uint(0), uint(self.purpose as u8)),
             (uint(1), uint(self.stage)),
             (uint(2), uint(self.cipher_suite)),
             (uint(3), bytes(self.initiator_identity.as_bytes())),
@@ -422,10 +367,7 @@ impl HandshakePayload {
         ciborium::ser::into_writer(&Value::Map(entries), &mut encoded)
             .map_err(|error| Error::Encoding(error.to_string()))?;
 
-        Frame::new(
-            message_type_for_handshake_type(self.handshake_type),
-            encoded,
-        )
+        Frame::new(message_type_for_purpose(self.purpose), encoded)
     }
 
     /// Decodes and strictly validates a signed handshake payload.
@@ -437,19 +379,9 @@ impl HandshakePayload {
 
         let entries = frame.validate_cbor_map()?;
 
-        let mut fields: Vec<Option<Value>> = (0..12).map(|_| None).collect();
+        let mut fields = map_into_fields(entries, 12, || Error::InvalidHandshake)?;
 
-        for (key, value) in entries {
-            let key = usize::try_from(key).map_err(|_| Error::InvalidHandshake)?;
-
-            if key >= fields.len() || fields[key].is_some() {
-                return Err(Error::InvalidHandshake);
-            }
-
-            fields[key] = Some(value);
-        }
-
-        let handshake_type = HandshakeType::try_from(uint_value(
+        let purpose = HandshakePurpose::try_from(uint_value(
             fields[0].take().ok_or(Error::InvalidHandshake)?,
         )?)?;
 
@@ -501,7 +433,7 @@ impl HandshakePayload {
             .transpose()?;
 
         let payload = Self {
-            handshake_type,
+            purpose,
             stage,
             cipher_suite,
             initiator_identity,
@@ -522,16 +454,15 @@ impl HandshakePayload {
             return Err(Error::InvalidHandshake);
         }
 
-        if payload.handshake_type == HandshakeType::Initial && payload.previous_session_id.is_some()
-        {
+        if payload.purpose == HandshakePurpose::Initial && payload.previous_session_id.is_some() {
             return Err(Error::InvalidHandshake);
         }
 
-        if payload.handshake_type == HandshakeType::Rekey && payload.previous_session_id.is_none() {
+        if payload.purpose == HandshakePurpose::Rekey && payload.previous_session_id.is_none() {
             return Err(Error::InvalidHandshake);
         }
 
-        if frame.message_type != message_type_for_handshake_type(payload.handshake_type) {
+        if frame.message_type != message_type_for_purpose(payload.purpose) {
             return Err(Error::InvalidHandshake);
         }
 
@@ -539,32 +470,20 @@ impl HandshakePayload {
     }
 }
 
-/// Maps the signed handshake purpose to its corresponding wire message type.
-fn message_type_for_handshake_type(handshake_type: HandshakeType) -> MessageType {
-    match handshake_type {
-        HandshakeType::Initial => MessageType::Handshake,
-        HandshakeType::Rekey => MessageType::Rekey,
-    }
-}
-
 /// Final session confirmation containing the derived session ID and MAC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionConfirmPayload {
     pub session_id: SessionId,
-    pub role: u8,
+    pub role: HelloRole,
     pub confirmation: [u8; 32],
 }
 
 impl SessionConfirmPayload {
     /// Encodes the role-specific confirmation MAC and session identifier.
     pub fn encode(&self) -> Result<Frame> {
-        if self.role > 1 {
-            return Err(Error::InvalidHandshake);
-        }
-
         let value = Value::Map(vec![
             (uint(0), bytes(self.session_id.as_bytes())),
-            (uint(1), uint(self.role)),
+            (uint(1), uint(self.role as u8)),
             (uint(2), bytes(&self.confirmation)),
         ]);
 
@@ -587,24 +506,14 @@ impl SessionConfirmPayload {
             return Err(Error::ConfirmationInvalid);
         }
 
-        let mut fields: Vec<Option<Value>> = (0..3).map(|_| None).collect();
-
-        for (key, value) in entries {
-            let key = usize::try_from(key).map_err(|_| Error::ConfirmationInvalid)?;
-
-            if key >= fields.len() || fields[key].is_some() {
-                return Err(Error::ConfirmationInvalid);
-            }
-
-            fields[key] = Some(value);
-        }
+        let mut fields = map_into_fields(entries, 3, || Error::ConfirmationInvalid)?;
 
         Ok(Self {
             session_id: SessionId::from_bytes(array_value(
                 fields[0].take().ok_or(Error::ConfirmationInvalid)?,
                 "session ID",
             )?),
-            role: u8::try_from(uint_value(
+            role: HelloRole::try_from(uint_value(
                 fields[1].take().ok_or(Error::ConfirmationInvalid)?,
             )?)
             .map_err(|_| Error::ConfirmationInvalid)?,
@@ -621,7 +530,7 @@ impl SessionConfirmPayload {
         &self,
         keys: &SessionKeys,
         hash: &[u8; 32],
-        expected_role: u8,
+        expected_role: HelloRole,
     ) -> Result<()> {
         if self.role != expected_role {
             return Err(Error::ConfirmationInvalid);
@@ -633,7 +542,7 @@ impl SessionConfirmPayload {
     /// Verifies the session ID, role, and confirmation MAC against the
     /// derived session keys.
     pub fn verify(&self, keys: &SessionKeys, hash: &[u8; 32]) -> Result<()> {
-        if self.session_id != keys.session_id || self.role > 1 {
+        if self.session_id != keys.session_id {
             return Err(Error::ConfirmationInvalid);
         }
 
@@ -641,7 +550,7 @@ impl SessionConfirmPayload {
             &keys.confirmation_key,
             hash,
             &self.confirmation,
-            self.role == 0,
+            self.role == HelloRole::Initiator,
         )
     }
 }
@@ -709,44 +618,12 @@ pub fn local_identity_wins_rekey_glare(
     local.as_bytes() > remote_initiator.as_bytes()
 }
 
-fn uint(value: impl Into<i128>) -> Value {
-    Value::Integer((value.into() as u64).into())
-}
-
-fn bytes(value: &[u8]) -> Value {
-    Value::Bytes(value.to_vec())
-}
-
 fn uint_value(value: Value) -> Result<u64> {
     let Value::Integer(value) = value else {
         return Err(Error::InvalidHandshake);
     };
 
     u64::try_from(value).map_err(|_| Error::InvalidHandshake)
-}
-
-fn bytes_value(value: Value, kind: &'static str) -> Result<Vec<u8>> {
-    let Value::Bytes(value) = value else {
-        return Err(Error::InvalidLength {
-            kind,
-            expected: 0,
-            actual: 0,
-        });
-    };
-
-    Ok(value)
-}
-
-fn array_value<const N: usize>(value: Value, kind: &'static str) -> Result<[u8; N]> {
-    let bytes = bytes_value(value, kind)?;
-
-    bytes
-        .try_into()
-        .map_err(|bytes: Vec<u8>| Error::InvalidLength {
-            kind,
-            expected: N,
-            actual: bytes.len(),
-        })
 }
 
 fn identity_value(value: Value) -> Result<PeerIdentity> {
@@ -837,6 +714,31 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_cbor_version_is_not_truncated() {
+        let commit = CommitPayload {
+            cipher_suite: 1,
+            purpose: HandshakePurpose::Initial,
+            commitment: [7; 32],
+            previous_session_id: None,
+        }
+        .encode()
+        .unwrap();
+        let Value::Map(mut entries) = ciborium::de::from_reader(commit.payload.as_slice()).unwrap()
+        else {
+            panic!("encoded commit must be a map");
+        };
+        entries[0].1 = uint(257u64);
+        let mut payload = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut payload).unwrap();
+        let frame = Frame::new(MessageType::Handshake, payload).unwrap();
+
+        assert_eq!(
+            CommitPayload::decode(&frame),
+            Err(Error::UnsupportedVersion(257))
+        );
+    }
+
+    #[test]
     fn commit_rejects_wrong_message_type() {
         let commit = CommitPayload {
             cipher_suite: 1,
@@ -883,7 +785,7 @@ mod tests {
         let responder = IdentityKeypair::from_bytes(&[2; 32]);
 
         let mut payload = HandshakePayload {
-            handshake_type: HandshakeType::Initial,
+            purpose: HandshakePurpose::Initial,
             stage: 0,
             cipher_suite: 1,
             initiator_identity: initiator.identity(),
@@ -913,7 +815,7 @@ mod tests {
         let responder = IdentityKeypair::from_bytes(&[2; 32]);
 
         let mut payload = HandshakePayload {
-            handshake_type: HandshakeType::Initial,
+            purpose: HandshakePurpose::Initial,
             stage: 0,
             cipher_suite: 1,
             initiator_identity: initiator.identity(),
@@ -979,7 +881,7 @@ mod tests {
         let responder = IdentityKeypair::from_bytes(&[2; 32]);
 
         let mut payload = HandshakePayload {
-            handshake_type: HandshakeType::Rekey,
+            purpose: HandshakePurpose::Rekey,
             stage: 0,
             cipher_suite: 1,
             initiator_identity: initiator.identity(),

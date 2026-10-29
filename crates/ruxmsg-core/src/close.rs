@@ -2,6 +2,7 @@
 
 use ciborium::value::Value;
 
+use crate::encoding::{array_value, bytes, map_into_fields, uint};
 use crate::error::{Error, Result};
 use crate::protocol::{MessageType, SessionId};
 use crate::wire::Frame;
@@ -53,7 +54,7 @@ impl ClosePayload {
         }
         let mut entries = vec![(uint(1), uint(self.reason as u8))];
         if let Some(session_id) = self.session_id {
-            entries.push((uint(0), Value::Bytes(session_id.as_bytes().to_vec())));
+            entries.push((uint(0), bytes(session_id.as_bytes())));
         }
         if let Some(detail) = &self.detail {
             entries.push((uint(2), Value::Text(detail.clone())));
@@ -80,24 +81,13 @@ impl ClosePayload {
             return Err(Error::InvalidClosePayload);
         }
 
-        let mut fields: Vec<Option<Value>> = vec![None, None, None];
-
-        for (key, value) in entries {
-            let index = usize::try_from(key).map_err(|_| Error::InvalidClosePayload)?;
-            if index >= fields.len() || fields[index].is_some() {
-                return Err(Error::InvalidClosePayload);
-            }
-            fields[index] = Some(value);
-        }
+        let mut fields = map_into_fields(entries, 3, || Error::InvalidClosePayload)?;
         let session_id = fields[0]
             .take()
             .map(|value| {
-                let Value::Bytes(bytes) = value else {
-                    return Err(Error::InvalidClosePayload);
-                };
-                let array: [u8; SessionId::LENGTH] =
-                    bytes.try_into().map_err(|_| Error::InvalidClosePayload)?;
-                Ok(SessionId::from_bytes(array))
+                array_value(value, "session ID")
+                    .map(SessionId::from_bytes)
+                    .map_err(|_| Error::InvalidClosePayload)
             })
             .transpose()?;
         let reason = CloseReason::try_from(uint_value(
@@ -121,10 +111,6 @@ impl ClosePayload {
             detail,
         })
     }
-}
-
-fn uint(value: impl Into<i128>) -> Value {
-    Value::Integer((value.into() as u64).into())
 }
 
 fn uint_value(value: Value) -> Result<u64> {

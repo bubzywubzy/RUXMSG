@@ -4,7 +4,7 @@ use thiserror::Error;
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
     #[error("unsupported protocol version: {0:#04x}")]
-    UnsupportedVersion(u8),
+    UnsupportedVersion(u64),
 
     #[error("unknown message type: {0:#04x}")]
     UnknownMessageType(u8),
@@ -22,7 +22,7 @@ pub enum Error {
         actual: usize,
     },
 
-    #[error("trust-store operation failed: {0}")]
+    #[error("storage operation failed: {0}")]
     Storage(String),
 
     #[error("invalid Ed25519 identity key")]
@@ -76,17 +76,8 @@ pub enum Error {
     #[error("invalid session state transition")]
     InvalidStateTransition,
 
-    #[error("transport is closed")]
-    TransportClosed,
-
-    #[error("transport I/O failed: {0}")]
-    Transport(String),
-
     #[error("transport read timed out")]
     TransportTimeout,
-
-    #[error("unexpected trailing frame bytes")]
-    TrailingFrameBytes,
 
     #[error("invalid DATA payload")]
     InvalidDataPayload,
@@ -106,7 +97,7 @@ pub enum Error {
     #[error("short authentication string was not approved")]
     SasRejected,
 
-    #[error("peer identity does not match the trusted identity")]
+    #[error("peer identity does not match the expected identity")]
     IdentityMismatch,
 }
 

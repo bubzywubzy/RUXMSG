@@ -39,7 +39,25 @@ impl TryFrom<u8> for ProtocolVersion {
     fn try_from(value: u8) -> Result<Self> {
         match value {
             0x01 => Ok(Self::V1),
-            other => Err(Error::UnsupportedVersion(other)),
+            other => Err(Error::UnsupportedVersion(u64::from(other))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandshakePurpose {
+    Initial = 0,
+    Rekey = 1,
+}
+
+impl TryFrom<u64> for HandshakePurpose {
+    type Error = Error;
+
+    fn try_from(value: u64) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Initial),
+            1 => Ok(Self::Rekey),
+            _ => Err(Error::InvalidHandshake),
         }
     }
 }
