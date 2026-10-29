@@ -87,28 +87,15 @@ jobs:
           tool: cargo-fuzz@0.13.2
 
       - name: Build fuzz targets
-        run: cargo fuzz build
+        run: cargo fuzz build --target x86_64-unknown-linux-gnu
         working-directory: fuzz
 
       - name: Run bounded smoke fuzzing
         shell: bash
         run: |
           set -euo pipefail
-
-          for target in \
-            close_decode \
-            config_parse \
-            data_decrypt \
-            engine_inputs \
-            frame_cbor \
-            frame_decode \
-            frame_stream \
-            handshake_decode \
-            ratchet_state
-          do
-            echo "::group::Fuzz target: ${target}"
-            cargo fuzz run "$target" -- -runs=100 -max_len=4096 -timeout=10
-            echo "::endgroup::"
+          for target in close_decode config_parse data_decrypt engine_inputs frame_cbor frame_decode frame_stream handshake_decode ratchet_state; do
+            cargo fuzz run "$target" --target x86_64-unknown-linux-gnu -- -runs=100 -max_len=4096 -timeout=10
           done
         working-directory: fuzz
 
