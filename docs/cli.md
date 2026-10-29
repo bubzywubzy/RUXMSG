@@ -88,10 +88,9 @@ Each connection receives a label such as `peer1` or `peer2`. You can keep multip
 rekey <label>             initiate a rekey
 chat [label]              open the conversation view
 msg <label> <text>        send a message to a specific peer
-<text>                    send to the default target
 ```
 
-Any input that doesn't match a recognized command is treated as a message to the default target. This means a mistyped command can accidentally be sent to a peer. Use `msg <label> <text>` when you want to be explicit.
+Messages must use `msg <label> <text>` or be entered in the conversation view. Unrecognized input is reported as an unknown command; it is never sent as a message.
 
 ### Tailscale
 

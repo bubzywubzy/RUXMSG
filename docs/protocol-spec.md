@@ -371,7 +371,7 @@ AAD is the canonical CBOR of `{0: 1, 1: session_id, 2: 3, 3: direction_id, 4: me
 
 ### 7.4 Plaintext and padding **[amended — D-014]**
 
-The AEAD plaintext is exactly `{0: content (bstr), 1: padding (bstr)}`. Padding is all `0x00`. The default quantum is 256 bytes and is measured on the **ciphertext**: the sender chooses the smallest padding length such that `len(canonical plaintext map) + 16` (AEAD tag) is a multiple of 256, recomputing the CBOR overhead of the padding field until stable. Content larger than `MAX_CONTENT` or a plaintext that would exceed the frame limit MUST be rejected by the sender.
+The AEAD plaintext is exactly `{0: content (bstr), 1: padding (bstr)}`. Padding is all `0x00`. The default quantum is 256 bytes and is measured on the **ciphertext**: the sender chooses the smallest padding length such that `len(canonical plaintext map) + 16` (AEAD tag) is a multiple of 256, accounting for the CBOR byte-string header size at each candidate length. Both sender and receiver MUST reject content larger than `MAX_CONTENT`; receivers MUST do so before committing the message key or replay counter. A plaintext or ciphertext that would exceed the frame limit MUST be rejected.
 
 Padding is inspected only after AEAD authentication.
 
@@ -426,6 +426,8 @@ The candidate stays non-active until both SESSION_CONFIRM messages verify. Then 
 ### 8.4 Failed rekey
 
 A failed or timed-out candidate is discarded; the old session returns to ACTIVE and remains usable. A failed rekey MUST NOT prevent a later rekey attempt.
+
+REKEY control frames are unauthenticated until the candidate handshake binds them. When no candidate is active, malformed or wrong-session COMMITs MUST be dropped without closing the active session. Implementations SHOULD surface a warning after three consecutive rejected rekey attempts and rate-limit further warnings until a valid attempt. After abandoning a candidate, implementations MAY discard up to eight late REKEY or SESSION_CONFIRM frames to tolerate bounded in-flight traffic. These mitigations limit accidental session termination and warning noise; they do not prevent an attacker on the transport from repeatedly attempting rekeys or delaying traffic.
 
 ### 8.5 Glare
 
@@ -546,6 +548,7 @@ RUXMSG/1 MUST NOT be described as production-secure solely because it uses estab
 | D-016 | Per-type frame limits, `MAX_CONTENT`, handshake timeouts, unauthenticated-handshake cap | **CLOSED** (values are defaults) |
 | D-017 | CLOSE is unauthenticated in V1 | **CLOSED** |
 | D-018 | No trust store, no address book, SAS on every connection; only the identity seed persists | **CLOSED** (owner decision) |
+| D-019 | Unauthenticated rekey-control frames may cause repeated candidate attempts; drop invalid/foreign COMMITs, warn after three consecutive failures, and discard up to eight late frames after abandoning a candidate | **ACCEPTED RESIDUAL** (mitigations do not authenticate pre-handshake frames) |
 
 ## Appendix C — RUXMSG/2 roadmap (non-normative)
 

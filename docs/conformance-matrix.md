@@ -41,6 +41,7 @@ Status meanings:
 | SAS dictionary hash | `bip39` crate | `core/tests/conformance.rs` | Implemented and tested |
 | SAS required on every initial handshake; rejection sends no signature | `core/src/machine.rs` | `core/tests/engine.rs`, `net/tests/net.rs` | Implemented and tested |
 | Typed SAS approval (`yes` + Enter), fingerprint display, countdown | `cli/src/repl.rs`, `cli/src/tui.rs` | unit test of the approval rule; manual pty run | Implemented; input handling in the REPL and modal is not automated |
+| Unknown REPL input is never sent as a message | `cli/src/commands.rs`, `cli/src/repl.rs` | `cli/src/commands.rs` unit tests | Implemented and tested |
 | HKDF key schedule, session ID, confirmation | `core/src/crypto.rs`, `core/src/handshake.rs` | `core/tests/conformance.rs`, `core/tests/engine.rs` | Implemented and tested |
 
 ## Messages
@@ -49,7 +50,7 @@ Status meanings:
 | --- | --- | --- | --- |
 | DATA schema, AAD, nonce | `core/src/data.rs`, `core/src/crypto.rs` | `core/tests/conformance.rs` | Implemented and tested |
 | Padding measured on ciphertext (D-014) | `core/src/data.rs` | `core/tests/conformance.rs` | Implemented and tested |
-| `MAX_CONTENT` (D-016), sender side | `core/src/data.rs`, `core/src/machine.rs` | `core/tests/limits.rs`, `core/tests/engine.rs` | Implemented and tested |
+| `MAX_CONTENT` (D-016), sender and receiver | `core/src/data.rs`, `core/src/machine.rs` | `core/tests/limits.rs`, unit tests in `core/src/data.rs` | Implemented and tested |
 | Prepare/authenticate/commit receive path | `core/src/data.rs`, `core/src/ratchet.rs` | `core/tests/conformance.rs`, unit tests | Implemented and tested |
 | Replay window, skipped keys, key-cache bound | `core/src/ratchet.rs` | `core/tests/conformance.rs`, `core/tests/engine.rs` | Implemented and tested (real ceiling is 128 keys, per spec §7.7) |
 | Directional separation | `core/src/machine.rs`, `core/src/data.rs` | `core/tests/conformance.rs` | Implemented and tested |
@@ -63,6 +64,7 @@ Status meanings:
 | Session bound to one connection (D-013) | `core/src/machine.rs`, `net/src/lib.rs` | `core/tests/engine.rs`, `net/tests/net.rs` | Implemented and tested |
 | Rekey without SAS; identity continuity (D-015) | `core/src/machine.rs` | `core/tests/engine.rs` | Implemented and tested |
 | Failed or timed-out rekey returns to ACTIVE; retry after a pause | `core/src/machine.rs` | `core/tests/engine.rs` | Implemented and tested |
+| Late rekey frames dropped within a bounded grace; rejected commits warn after three consecutive failures (D-019) | `core/src/machine.rs` | `core/tests/engine.rs` | Implemented and tested |
 | Peer-initiated rekey | `core/src/machine.rs` | `core/tests/engine.rs`, `net/tests/net.rs` | Implemented and tested |
 | Automatic rekey trigger: 24 h timer and message count | `core/src/machine.rs` | `core/tests/engine.rs` (timer and count triggers) | Implemented and tested |
 | Rekey glare tie-break | `core/src/machine.rs` | `core/tests/engine.rs` | Implemented and tested |
