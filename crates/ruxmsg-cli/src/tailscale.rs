@@ -2,10 +2,6 @@
 
 use std::process::{Command as ProcessCommand, Stdio};
 
-// =====================================================================
-// TAILSCALE
-// =====================================================================
-
 pub(crate) fn tailscale_missing_message() -> String {
     "tailscale not found on PATH — install it from \
      https://tailscale.com/download and try again"
@@ -18,7 +14,10 @@ pub(crate) fn tailscale_status() {
         .output()
     {
         Ok(output) if output.status.success() => {
-            let text = String::from_utf8_lossy(&output.stdout);
+            let text: String = String::from_utf8_lossy(&output.stdout)
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect();
 
             if text.contains("\"BackendState\":\"Running\"") {
                 println!("tailscale: running");

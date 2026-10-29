@@ -19,8 +19,6 @@ pub(crate) enum Command {
 
     Message { label: String, text: String },
 
-    BareMessage(String),
-
     Close { label: String },
 
     Rekey { label: String },
@@ -118,21 +116,16 @@ impl CommandParser {
             }
 
             "msg" => {
-                let mut parts = line.splitn(3, char::is_whitespace);
+                const USAGE: &str = "usage: msg <label> <text>";
 
-                let _ = parts.next();
-
-                let label = parts
-                    .next()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "usage: msg <label> <text>".to_string())?;
-
-                let text = parts
-                    .next()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "usage: msg <label> <text>".to_string())?;
+                // Skip the command word, then the label, tolerating runs of
+                // whitespace; the remainder is the message verbatim.
+                let rest = line.trim_start()["msg".len()..].trim_start();
+                let (label, text) = rest.split_once(char::is_whitespace).ok_or(USAGE)?;
+                let text = text.trim();
+                if label.is_empty() || text.is_empty() {
+                    return Err(USAGE.to_string());
+                }
 
                 Ok(Command::Message {
                     label: label.to_string(),
@@ -208,14 +201,7 @@ impl CommandParser {
 
             "quit" | "exit" => Self::no_args(words, Command::Quit, "quit"),
 
-            /*
-             * Bare input remains a message if a default target exists.
-             *
-             * The application decides whether a bare command is a message
-             * or an unknown command because only the application knows
-             * whether a target is selected.
-             */
-            _ => Ok(Command::BareMessage(line.to_string())),
+            _ => Err(format!("unknown command: {command}; type `help`")),
         }
     }
 
@@ -290,5 +276,29 @@ impl CommandParser {
         }
 
         Ok(command)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_input_is_not_interpreted_as_a_message() {
+        assert!(matches!(
+            CommandParser::parse("conect peer"),
+            Err(error) if error == "unknown command: conect; type `help`"
+        ));
+    }
+
+    #[test]
+    fn explicit_message_command_keeps_the_message_text() {
+        let Command::Message { label, text } =
+            CommandParser::parse("msg peer  words stay intact ").unwrap()
+        else {
+            panic!("expected a message command");
+        };
+        assert_eq!(label, "peer");
+        assert_eq!(text, "words stay intact");
     }
 }

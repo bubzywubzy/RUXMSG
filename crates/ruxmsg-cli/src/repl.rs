@@ -53,7 +53,6 @@ SESSIONS
 MESSAGING
   chat [label]              open the conversation view
   msg <label> <text>        send a message directly
-  <text>                    send to the default target
 
 VERIFICATION
   Every new connection shows a Short Authentication String. Compare the
@@ -303,15 +302,6 @@ impl App {
                     self.say(&format!("error: {error}"));
                 }
             }
-
-            Command::BareMessage(text) => match self.default_target.clone() {
-                Some(target) => {
-                    if let Err(error) = self.send_text(&target, text) {
-                        self.say(&format!("error: {error}"));
-                    }
-                }
-                None => self.say("unknown command — no default chat target; type `help`"),
-            },
 
             Command::Close { label } => match self.close_session(&label) {
                 Ok(()) => self.say(&format!("closing '{label}'")),
