@@ -175,7 +175,7 @@ For the complete threat model, security assumptions, non-goals, operational guid
 | [Conformance matrix](docs/conformance-matrix.md) | Requirement-by-requirement implementation and test status. |
 | [Architecture and library guide](docs/architecture.md) | Crate boundaries, the sans-IO `Engine` contract, Tokio driver, and client runtime. |
 | [CLI guide](docs/cli.md) | Client commands, profiles, configuration, Tailscale helpers, and uninstallation. |
-| [Contributing](docs/contributing.md) | Toolchain setup, testing, fuzzing, and the protocol-change workflow. |
+| [Contributing](CONTRIBUTING.md) | Toolchain setup, testing, fuzzing, and the protocol-change workflow. |
 
 ## Contributing
 

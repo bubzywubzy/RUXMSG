@@ -10,7 +10,7 @@ RUXMSG is a security-sensitive Rust protocol implementation. Small changes can a
 - `fuzz/`: fuzz crate and targets
 - `docs/protocol-spec.md`: normative specification, including the decision log (Appendix B)
 - `docs/conformance-matrix.md`: implementation and test status
-- `docs/architecture.md`, `docs/library.md`, `docs/cli.md`, `docs/security-model.md`: explanatory guides
+- `docs/architecture.md`, `docs/library.md`, `docs/cli.md`, `SECURITY.md`: explanatory guides
 
 ## Toolchain and checks
 
