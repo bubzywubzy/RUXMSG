@@ -35,8 +35,16 @@ enum Step {
 
 fuzz_target!(|data: (bool, Vec<Step>)| {
     let (initiator, steps) = data;
-    let role = if initiator { HelloRole::Initiator } else { HelloRole::Responder };
-    let mut engine = Engine::new(role, IdentityKeypair::from_bytes(&[4; 32]), Box::new(Counter(1)));
+    let role = if initiator {
+        HelloRole::Initiator
+    } else {
+        HelloRole::Responder
+    };
+    let mut engine = Engine::new(
+        role,
+        IdentityKeypair::from_bytes(&[4; 32]),
+        Box::new(Counter(1)),
+    );
     let mut armed: Vec<DeadlineId> = Vec::new();
 
     for step in steps.into_iter().take(64) {
