@@ -7,7 +7,15 @@ pub fn sanitize_for_display(input: &str) -> String {
 
     for character in input.chars() {
         let unsafe_char = (character.is_control() && character != '\n' && character != '\t')
-            || matches!(character, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+            || matches!(
+                character,
+                '\u{061C}'
+                    | '\u{200E}'
+                    | '\u{200F}'
+                    | '\u{2028}'..='\u{202E}'
+                    | '\u{2066}'..='\u{2069}'
+                    | '\u{FEFF}'
+            );
 
         if unsafe_char {
             output.push_str(&format!("\\u{{{:04x}}}", u32::from(character)));

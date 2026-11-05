@@ -175,7 +175,7 @@ impl App {
                 view.input.zeroize();
 
                 if !text.is_empty()
-                    && let Err(error) = self.send_text(&label, std::mem::take(&mut *text))
+                    && let Err(error) = self.send_text(&label, std::mem::take(&mut text))
                     && let Some(peer) = self.peers.get_mut(&label)
                 {
                     peer.scrollback
@@ -200,6 +200,7 @@ impl App {
             KeyCode::Char(character)
                 if !control
                     && !key.modifiers.contains(KeyModifiers::ALT)
+                    && !character.is_control()
                     && view.input.len() + character.len_utf8() <= MAX_CONTENT =>
             {
                 view.input.push(character);
@@ -239,9 +240,13 @@ impl App {
                     pending.typed.pop();
                 }
             }
-            KeyCode::Char(character) if !control => {
+            KeyCode::Char(character)
+                if !control
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                    && !character.is_control() =>
+            {
                 if let Some(pending) = self.sas.front_mut()
-                    && pending.typed.len() < 16
+                    && pending.typed.len() + character.len_utf8() <= 16
                 {
                     pending.typed.push(character);
                 }
@@ -483,7 +488,10 @@ impl App {
             .map(|(label, peer)| format!("{label} +{}", peer.unread))
             .collect();
 
-        let mut text = String::from(" Enter send · Esc REPL · Ctrl-R rekey · PgUp/PgDn scroll");
+        let mut text = format!(
+            " Enter send · {} REPL · {} rekey · {}/{} scroll",
+            self.keys.leave, self.keys.rekey, self.keys.page_up, self.keys.page_down
+        );
 
         if !others.is_empty() {
             text.push_str(" · new: ");
@@ -558,7 +566,7 @@ impl App {
         let prompt = "> ";
 
         frame.render_widget(
-            Paragraph::new(format!("{prompt}{}", pending.typed)),
+            Paragraph::new(format!("{prompt}{}", pending.typed.as_str())),
             input_area,
         );
 

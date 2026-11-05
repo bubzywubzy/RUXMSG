@@ -213,7 +213,10 @@ impl App {
                 self.input.pop();
             }
             KeyCode::Char(character)
-                if !control && self.input.len() + character.len_utf8() <= MAX_CONTENT =>
+                if !control
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                    && !character.is_control()
+                    && self.input.len() + character.len_utf8() <= MAX_CONTENT =>
             {
                 self.input.push(character);
             }
@@ -239,9 +242,13 @@ impl App {
                     pending.typed.pop();
                 }
             }
-            KeyCode::Char(character) => {
+            KeyCode::Char(character)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                    && !character.is_control() =>
+            {
                 if let Some(pending) = self.sas.front_mut()
-                    && pending.typed.len() < 16
+                    && pending.typed.len() + character.len_utf8() <= 16
                 {
                     pending.typed.push(character);
                 }

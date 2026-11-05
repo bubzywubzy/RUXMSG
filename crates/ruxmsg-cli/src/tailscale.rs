@@ -2,6 +2,8 @@
 
 use std::process::{Command as ProcessCommand, Stdio};
 
+use ruxmsg::display::sanitize_for_display;
+
 pub(crate) fn tailscale_missing_message() -> String {
     "tailscale not found on PATH — install it from \
      https://tailscale.com/download and try again"
@@ -31,7 +33,7 @@ pub(crate) fn tailscale_status() {
         Ok(output) => {
             println!(
                 "tailscale status failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+                sanitize_for_display(&String::from_utf8_lossy(&output.stderr))
             );
         }
 
@@ -65,13 +67,16 @@ pub(crate) fn tailscale_up() {
 pub(crate) fn tailscale_ip() {
     match ProcessCommand::new("tailscale").arg("ip").output() {
         Ok(output) if output.status.success() => {
-            print!("{}", String::from_utf8_lossy(&output.stdout));
+            print!(
+                "{}",
+                sanitize_for_display(&String::from_utf8_lossy(&output.stdout))
+            );
         }
 
         Ok(output) => {
             println!(
                 "tailscale ip failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+                sanitize_for_display(&String::from_utf8_lossy(&output.stderr))
             );
         }
 
