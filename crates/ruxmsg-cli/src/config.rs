@@ -155,6 +155,28 @@ pub struct KeySpec {
     pub alt: bool,
 }
 
+impl fmt::Display for KeySpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.ctrl {
+            write!(formatter, "Ctrl+")?;
+        }
+        if self.alt {
+            write!(formatter, "Alt+")?;
+        }
+        match self.key {
+            KeyName::Esc => write!(formatter, "Esc"),
+            KeyName::Up => write!(formatter, "Up"),
+            KeyName::Down => write!(formatter, "Down"),
+            KeyName::PageUp => write!(formatter, "PageUp"),
+            KeyName::PageDown => write!(formatter, "PageDown"),
+            KeyName::Home => write!(formatter, "Home"),
+            KeyName::End => write!(formatter, "End"),
+            KeyName::Function(n) => write!(formatter, "F{n}"),
+            KeyName::Letter(c) => write!(formatter, "{}", c.to_ascii_uppercase()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyMap {
     pub leave: KeySpec,
