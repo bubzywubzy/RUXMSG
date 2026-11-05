@@ -235,28 +235,26 @@ pub fn derive_session_keys(
     transcript_hash: &[u8; 32],
 ) -> Result<SessionKeys> {
     let hkdf = Hkdf::<Sha256>::new(Some(transcript_hash), shared_secret);
-    let mut root_key = [0; 32];
-    let mut initiator_to_responder = [0; 32];
-    let mut responder_to_initiator = [0; 32];
-    let mut session_id = [0; 16];
-    let mut confirmation_key = [0; 32];
-    hkdf.expand(b"RUXMSG/1/root", &mut root_key)
+    let mut keys = SessionKeys {
+        root_key: [0; 32],
+        initiator_to_responder: [0; 32],
+        responder_to_initiator: [0; 32],
+        session_id: SessionId::from_bytes([0; 16]),
+        confirmation_key: [0; 32],
+    };
+    let mut session_id = Zeroizing::new([0u8; 16]);
+    hkdf.expand(b"RUXMSG/1/root", &mut keys.root_key)
         .map_err(|_| Error::KeyDerivation)?;
-    hkdf.expand(b"RUXMSG/1/I-to-R", &mut initiator_to_responder)
+    hkdf.expand(b"RUXMSG/1/I-to-R", &mut keys.initiator_to_responder)
         .map_err(|_| Error::KeyDerivation)?;
-    hkdf.expand(b"RUXMSG/1/R-to-I", &mut responder_to_initiator)
+    hkdf.expand(b"RUXMSG/1/R-to-I", &mut keys.responder_to_initiator)
         .map_err(|_| Error::KeyDerivation)?;
-    hkdf.expand(b"RUXMSG/1/session-id", &mut session_id)
+    hkdf.expand(b"RUXMSG/1/session-id", session_id.as_mut_slice())
         .map_err(|_| Error::KeyDerivation)?;
-    hkdf.expand(b"RUXMSG/1/session-confirm", &mut confirmation_key)
+    hkdf.expand(b"RUXMSG/1/session-confirm", &mut keys.confirmation_key)
         .map_err(|_| Error::KeyDerivation)?;
-    Ok(SessionKeys {
-        root_key,
-        initiator_to_responder,
-        responder_to_initiator,
-        session_id: SessionId::from_bytes(session_id),
-        confirmation_key,
-    })
+    keys.session_id = SessionId::from_bytes(*session_id);
+    Ok(keys)
 }
 
 /// Computes the role-specific confirmation MAC over the transcript hash.

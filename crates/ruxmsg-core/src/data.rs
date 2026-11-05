@@ -68,30 +68,19 @@ impl DataPlaintext {
         }
 
         // Encode size excluding padding bytes and the padding header.
-        let fixed = Self {
-            content: content.to_vec(),
-            padding: Vec::new(),
-        }
-        .encode()?
-        .len()
-            - bstr_header_len(0);
+        let fixed = 3 + bstr_header_len(content.len()) + content.len();
 
         let mut padding_len = 0usize;
-
         loop {
             let total = fixed + bstr_header_len(padding_len) + padding_len + AEAD_TAG_SIZE;
-
             if total.is_multiple_of(DEFAULT_PADDING_QUANTUM) {
                 break;
             }
-
             padding_len += 1;
-
             if padding_len > MAX_FRAME_SIZE as usize {
                 return Err(Error::DataTooLarge);
             }
         }
-
         Ok(Self {
             content: content.to_vec(),
             padding: vec![0; padding_len],
@@ -115,25 +104,35 @@ impl DataPlaintext {
 
     /// Decodes and validates content/padding after AEAD authentication.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let entries = Frame::validate_cbor_map_payload(bytes)?;
+        let mut entries = Frame::validate_cbor_map_payload(bytes)?;
 
         if entries.len() != 2 {
+            for (_, v) in &mut entries {
+                crate::wire::wipe_cbor_value(v);
+            }
             return Err(Error::InvalidDataPayload);
         }
 
-        let mut content = None;
-        let mut padding = None;
+        let mut content: Option<Zeroizing<Vec<u8>>> = None;
+        let mut padding: Option<Zeroizing<Vec<u8>>> = None;
 
-        for (key, value) in entries {
-            match key {
-                0 => content = Some(bytes_value(value)?),
-                1 => padding = Some(bytes_value(value)?),
-                _ => return Err(Error::InvalidDataPayload),
+        let mut iter = entries.into_iter();
+        while let Some((key, mut value)) = iter.next() {
+            let res = match key {
+                0 => bytes_value(value).map(|b| content = Some(Zeroizing::new(b))),
+                1 => bytes_value(value).map(|b| padding = Some(Zeroizing::new(b))),
+                _ => {
+                    crate::wire::wipe_cbor_value(&mut value);
+                    Err(Error::InvalidDataPayload)
+                }
+            };
+            if let Err(err) = res {
+                for (_, mut rem) in iter {
+                    crate::wire::wipe_cbor_value(&mut rem);
+                }
+                return Err(err);
             }
         }
-
-        let padding = padding.map(Zeroizing::new);
-        let content = content.map(Zeroizing::new);
         let mut padding = padding.ok_or(Error::InvalidDataPayload)?;
         let mut content = content.ok_or(Error::InvalidDataPayload)?;
         if content.len() > MAX_CONTENT {
@@ -425,8 +424,9 @@ fn uint_value(value: Value) -> Result<u64> {
     u64::try_from(value).map_err(|_| Error::InvalidDataPayload)
 }
 
-fn bytes_value(value: Value) -> Result<Vec<u8>> {
+fn bytes_value(mut value: Value) -> Result<Vec<u8>> {
     let Value::Bytes(value) = value else {
+        crate::wire::wipe_cbor_value(&mut value);
         return Err(Error::InvalidDataPayload);
     };
 

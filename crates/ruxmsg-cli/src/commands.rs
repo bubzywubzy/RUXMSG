@@ -3,31 +3,51 @@
 // =====================================================================
 // COMMAND MODEL
 // =====================================================================
+use zeroize::Zeroizing;
 
 pub(crate) enum Command {
     Profile(ProfileCommand),
 
-    Start { addr: String },
+    Start {
+        addr: String,
+    },
 
     Stop,
 
-    Connect { addr: String },
+    Connect {
+        addr: String,
+    },
 
     Peers,
 
-    Use { label: String },
+    Use {
+        label: String,
+    },
 
-    Message { label: String, text: String },
+    Message {
+        label: String,
+        text: Zeroizing<String>,
+    },
 
-    Close { label: String },
+    Close {
+        label: String,
+    },
 
-    Rekey { label: String },
+    Rekey {
+        label: String,
+    },
 
-    Fingerprint { label: Option<String> },
+    Fingerprint {
+        label: Option<String>,
+    },
 
-    Session { label: String },
+    Session {
+        label: String,
+    },
 
-    Chat { label: Option<String> },
+    Chat {
+        label: Option<String>,
+    },
 
     Tailscale(TailscaleCommand),
 
@@ -129,7 +149,7 @@ impl CommandParser {
 
                 Ok(Command::Message {
                     label: label.to_string(),
-                    text: text.to_string(),
+                    text: Zeroizing::new(text.to_string()),
                 })
             }
 
@@ -299,6 +319,6 @@ mod tests {
             panic!("expected a message command");
         };
         assert_eq!(label, "peer");
-        assert_eq!(text, "words stay intact");
+        assert_eq!(text.as_str(), "words stay intact");
     }
 }

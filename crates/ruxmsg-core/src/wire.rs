@@ -8,12 +8,37 @@ use std::collections::HashSet;
 use std::io::Cursor;
 
 use ciborium::value::Value;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{Error, Result};
 use crate::protocol::{FrameLength, MAX_FRAME_SIZE, MessageType, ProtocolVersion};
 
 pub const HEADER_SIZE: usize = 6;
+
+pub(crate) fn wipe_cbor_value(value: &mut Value) {
+    match value {
+        Value::Bytes(bytes) => bytes.zeroize(),
+        Value::Text(text) => text.zeroize(),
+        Value::Array(items) => {
+            for item in items {
+                wipe_cbor_value(item);
+            }
+        }
+        Value::Map(entries) => {
+            for (key, value) in entries {
+                wipe_cbor_value(key);
+                wipe_cbor_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn wipe_cbor_entries(entries: &mut [(u64, Value)]) {
+    for (_, value) in entries {
+        wipe_cbor_value(value);
+    }
+}
 
 fn check_length(message_type: MessageType, length: u32) -> Result<FrameLength> {
     if length > message_type.max_payload() {
@@ -113,33 +138,57 @@ impl Frame {
         }
 
         let mut cursor = Cursor::new(payload);
-        let value: Value = ciborium::de::from_reader(&mut cursor)
+        let mut value: Value = ciborium::de::from_reader(&mut cursor)
             .map_err(|error| Error::Encoding(error.to_string()))?;
 
         if cursor.position() != payload.len() as u64 {
+            wipe_cbor_value(&mut value);
             return Err(Error::NonCanonicalEncoding);
         }
 
-        let Value::Map(entries) = value else {
+        let Value::Map(mut entries) = value else {
+            wipe_cbor_value(&mut value);
             return Err(Error::InvalidPayloadShape);
         };
 
         let mut keys = HashSet::with_capacity(entries.len());
         let mut canonical_entries = Vec::with_capacity(entries.len());
 
-        for (key, value) in entries {
+        let mut iter = entries.drain(..);
+        while let Some((mut key, mut val)) = iter.next() {
             let Value::Integer(integer) = key else {
+                wipe_cbor_value(&mut key);
+                wipe_cbor_value(&mut val);
+                for (mut k, mut v) in iter {
+                    wipe_cbor_value(&mut k);
+                    wipe_cbor_value(&mut v);
+                }
+                wipe_cbor_entries(&mut canonical_entries);
                 return Err(Error::InvalidMapKey);
             };
-            let key: u64 = integer.try_into().map_err(|_| Error::InvalidMapKey)?;
-            if !keys.insert(key) {
-                return Err(Error::DuplicateMapKey(key));
+            let Ok(key_u64) = u64::try_from(integer) else {
+                wipe_cbor_value(&mut val);
+                for (mut k, mut v) in iter {
+                    wipe_cbor_value(&mut k);
+                    wipe_cbor_value(&mut v);
+                }
+                wipe_cbor_entries(&mut canonical_entries);
+                return Err(Error::InvalidMapKey);
+            };
+            if !keys.insert(key_u64) {
+                wipe_cbor_value(&mut val);
+                for (mut k, mut v) in iter {
+                    wipe_cbor_value(&mut k);
+                    wipe_cbor_value(&mut v);
+                }
+                wipe_cbor_entries(&mut canonical_entries);
+                return Err(Error::DuplicateMapKey(key_u64));
             }
-            canonical_entries.push((key, value));
+            canonical_entries.push((key_u64, val));
         }
         canonical_entries.sort_by_key(|(key, _)| *key);
 
-        let canonical_value = Value::Map(
+        let mut canonical_value = Value::Map(
             canonical_entries
                 .into_iter()
                 .map(|(key, value)| (Value::Integer(key.into()), value))
@@ -148,9 +197,12 @@ impl Frame {
 
         let mut canonical = Zeroizing::new(Vec::new());
 
-        ciborium::ser::into_writer(&canonical_value, &mut *canonical)
-            .map_err(|error| Error::Encoding(error.to_string()))?;
+        if let Err(error) = ciborium::ser::into_writer(&canonical_value, &mut *canonical) {
+            wipe_cbor_value(&mut canonical_value);
+            return Err(Error::Encoding(error.to_string()));
+        }
         if canonical.as_slice() != payload {
+            wipe_cbor_value(&mut canonical_value);
             return Err(Error::NonCanonicalEncoding);
         }
 

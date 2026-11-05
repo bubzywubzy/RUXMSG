@@ -73,7 +73,7 @@ pub(crate) struct PendingSas {
     pub(crate) fingerprint: String,
     pub(crate) outbound: bool,
     pub(crate) since: Instant,
-    pub(crate) typed: String,
+    pub(crate) typed: Zeroizing<String>,
 }
 
 pub(crate) struct ChatView {
@@ -345,9 +345,11 @@ impl App {
             .ok_or_else(|| format!("no such session '{label}'"))
     }
 
-    pub(crate) fn send_text(&mut self, label: &str, text: String) -> Result<(), String> {
-        let mut text = Zeroizing::new(text);
-
+    pub(crate) fn send_text(
+        &mut self,
+        label: &str,
+        mut text: Zeroizing<String>,
+    ) -> Result<(), String> {
         if text.len() > MAX_CONTENT {
             return Err(format!("message too long (limit {MAX_CONTENT} bytes)"));
         }
@@ -581,7 +583,7 @@ impl App {
                     fingerprint: claimed,
                     outbound,
                     since: Instant::now(),
-                    typed: String::new(),
+                    typed: Zeroizing::new(String::with_capacity(16)),
                 });
 
                 if was_empty {
