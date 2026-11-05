@@ -27,7 +27,7 @@ A profile represents one Ed25519 identity. Its 32-byte seed is stored in the ope
 There is no trust file, address book, or profile registry. RUXMSG does not maintain a persistent list of profile names, so you need to remember the names you create.
 
 | Command | Effect |
-|---|---|
+| --- | --- |
 | `profile init <name>` | Create a new identity and make it active. Fails if the profile already exists. |
 | `profile use <name>` | Load an existing identity. |
 | `profile list` | Not supported. There is no profile registry to enumerate. |
@@ -141,7 +141,7 @@ Run `chat` or `chat <label>` to open the full-screen conversation view for a con
 The header shows the session state, such as `ACTIVE`, rekeying, or `CLOSED`, alongside the peer's full fingerprint.
 
 | Key | Action |
-|---|---|
+| --- | --- |
 | `Enter` | Send the current message. |
 | `Esc` | Return to the REPL. |
 | `Ctrl-C` | Return to the REPL. |
@@ -300,7 +300,7 @@ Check the scripts for supported installation paths and any additional prompts be
 ## Troubleshooting
 
 | Symptom | Likely cause or action |
-|---|---|
+| --- | --- |
 | `no identity loaded` | Run `profile use <name>` to load an existing identity or `profile init <name>` to create one. |
 | Storage error during `profile init` or `profile use` | The credential store may be unavailable. On Linux, ensure a Secret Service provider is running. |
 | Fingerprint changes after restart | The credential-store entry may not be persisting correctly. Treat this as a bug and report it. |

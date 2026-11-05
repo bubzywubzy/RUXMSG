@@ -3,3 +3,4 @@
 /fuzz/Cargo.lock
 /fuzz/corpus/
 /fuzz/artifacts/
+repomix*
