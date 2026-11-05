@@ -556,6 +556,7 @@ impl SessionConfirmPayload {
 }
 
 /// Verifies a responder-oriented handshake using the default role context.
+#[cfg(test)]
 pub fn verify_handshake(
     payload: &HandshakePayload,
     shared_secret: &[u8; 32],

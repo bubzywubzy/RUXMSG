@@ -11,7 +11,7 @@ use ruxmsg_core::encoding::Transcript;
 use ruxmsg_core::error::Error;
 use ruxmsg_core::handshake::{
     HandshakePayload, HandshakePurpose, HelloPayload, HelloRole, SessionConfirmPayload,
-    transcript_from_hellos, verify_handshake,
+    transcript_from_hellos, verify_handshake_for_role,
 };
 use ruxmsg_core::identity::PeerIdentity;
 use ruxmsg_core::protocol::{
@@ -536,13 +536,13 @@ fn handshake_signature_requires_current_sas_approval() {
     // rejected the SAS. Authentication and local SAS approval are separate
     // protocol decisions.
     assert!(matches!(
-        verify_handshake(&payload, &[7; 32], false),
+        verify_handshake_for_role(&payload, &payload.transcript(), &[7; 32], false),
         Err(Error::SasRejected)
     ));
 
     // The current volatile design does not persist trust enrollment.
     // Approval must therefore be supplied for this connection.
-    assert!(verify_handshake(&payload, &[7; 32], true).is_ok());
+    assert!(verify_handshake_for_role(&payload, &payload.transcript(), &[7; 32], true).is_ok());
 }
 
 #[test]
