@@ -224,23 +224,23 @@ impl Session {
         let (send_dir, send_key, recv_dir, recv_key) = match role {
             HelloRole::Initiator => (
                 DirectionId::InitiatorToResponder,
-                keys.initiator_to_responder,
+                &keys.initiator_to_responder,
                 DirectionId::ResponderToInitiator,
-                keys.responder_to_initiator,
+                &keys.responder_to_initiator,
             ),
             HelloRole::Responder => (
                 DirectionId::ResponderToInitiator,
-                keys.responder_to_initiator,
+                &keys.responder_to_initiator,
                 DirectionId::InitiatorToResponder,
-                keys.initiator_to_responder,
+                &keys.initiator_to_responder,
             ),
         };
 
         Self {
             id: keys.session_id,
             peer,
-            sender: DataSender::new(keys.session_id, send_dir, send_key),
-            receiver: DataReceiver::new(keys.session_id, recv_dir, recv_key),
+            sender: DataSender::new(keys.session_id, send_dir, *send_key),
+            receiver: DataReceiver::new(keys.session_id, recv_dir, *recv_key),
         }
     }
 }
@@ -463,6 +463,7 @@ impl Engine {
             }
             DeadlineKind::RekeyDue => {
                 self.rekey_blocked = false;
+                self.late_rekey_frames = 0;
                 self.begin_rekey(out);
             }
             DeadlineKind::Drain => {
@@ -562,7 +563,12 @@ impl Engine {
         Ok(())
     }
 
-    fn start_responder_run(&mut self, commit: CommitPayload, out: &mut Vec<Effect>) -> Result<()> {
+    fn start_responder_run(
+        &mut self,
+        commit: CommitPayload,
+        emit_rekey_started: bool,
+        out: &mut Vec<Effect>,
+    ) -> Result<()> {
         let (ephemeral, nonce) = self.fresh_keys();
 
         let local_hello = HelloPayload {
@@ -602,7 +608,9 @@ impl Engine {
                 Duration::from_secs(HANDSHAKE_TOTAL_TIMEOUT_SECS),
                 out,
             );
-            out.push(Effect::Notify(Event::RekeyStarted));
+            if emit_rekey_started {
+                out.push(Effect::Notify(Event::RekeyStarted));
+            }
         }
 
         self.rearm_frame_deadline(purpose, Step::Reveal, out);
@@ -664,7 +672,7 @@ impl Engine {
             return Err(Error::InvalidHandshake);
         }
 
-        self.start_responder_run(commit, out)
+        self.start_responder_run(commit, true, out)
     }
 
     fn drive_run(&mut self, frame: Frame, out: &mut Vec<Effect>) -> Result<Option<Candidate>> {
@@ -1086,17 +1094,24 @@ impl Engine {
 
     fn on_rekey_frame(&mut self, frame: Frame, out: &mut Vec<Effect>) {
         let Some(run) = self.run.as_ref() else {
+            if frame.message_type == MessageType::Rekey
+                && let Ok(commit) = CommitPayload::decode(&frame)
+                && commit.cipher_suite == 1
+                && commit.purpose == HandshakePurpose::Rekey
+                && commit.previous_session_id.is_some()
+                && commit.previous_session_id == self.active_session_id()
+            {
+                self.late_rekey_frames = 0;
+                self.on_incoming_commit(commit, true, out);
+                return;
+            }
+
             if self.late_rekey_frames > 0 {
                 self.late_rekey_frames -= 1;
                 return;
             }
 
-            if frame.message_type == MessageType::Rekey {
-                match CommitPayload::decode(&frame) {
-                    Ok(commit) => self.on_incoming_commit(commit, out),
-                    Err(_) => self.note_rekey_rejection(out),
-                }
-            } else if frame.message_type == MessageType::SessionConfirm {
+            if frame.message_type == MessageType::SessionConfirm {
                 self.terminate(
                     CloseCause::ProtocolError,
                     Some(CloseReason::ProtocolError),
@@ -1105,7 +1120,6 @@ impl Engine {
             } else {
                 self.note_rekey_rejection(out);
             }
-
             return;
         };
 
@@ -1125,7 +1139,12 @@ impl Engine {
         }
     }
 
-    fn on_incoming_commit(&mut self, commit: CommitPayload, out: &mut Vec<Effect>) {
+    fn on_incoming_commit(
+        &mut self,
+        commit: CommitPayload,
+        emit_rekey_started: bool,
+        out: &mut Vec<Effect>,
+    ) {
         let references_active = commit.previous_session_id.is_some()
             && commit.previous_session_id == self.active_session_id();
 
@@ -1138,7 +1157,7 @@ impl Engine {
         }
 
         self.consecutive_rekey_rejections = 0;
-        if let Err(error) = self.start_responder_run(commit, out) {
+        if let Err(error) = self.start_responder_run(commit, emit_rekey_started, out) {
             self.fail_rekey(&error, out);
         }
     }
@@ -1163,7 +1182,7 @@ impl Engine {
         self.cancel(DeadlineKind::HandshakeFrame, out);
         self.cancel(DeadlineKind::HandshakeTotal, out);
 
-        self.on_incoming_commit(commit, out);
+        self.on_incoming_commit(commit, false, out);
     }
 
     /// A failed rekey discards only the candidate; the session stays usable
