@@ -2,9 +2,9 @@ use bip39::Language;
 use sha2::{Digest, Sha256};
 
 use ruxmsg_core::crypto::{
-    EphemeralKeypair, IdentityKeypair, confirmation_mac, derive_message_key, derive_session_keys,
-    message_nonce, sas_indices, sas_words, transcript_hash, verify_confirmation,
-    verify_transcript_signature,
+    EphemeralKeypair, IdentityKeypair, commit_hash, confirmation_mac, derive_message_key,
+    derive_session_keys, message_nonce, sas_indices, sas_words, transcript_hash,
+    verify_confirmation, verify_transcript_signature,
 };
 use ruxmsg_core::data::{DataPlaintext, DataReceiver, DataSender};
 use ruxmsg_core::encoding::Transcript;
@@ -20,6 +20,18 @@ use ruxmsg_core::protocol::{
 };
 use ruxmsg_core::ratchet::{ReceivingChain, ReplayStatus, ReplayWindow};
 use ruxmsg_core::wire::Frame;
+
+fn hex_bytes(input: &str) -> Vec<u8> {
+    assert!(input.len().is_multiple_of(2));
+    input
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).unwrap();
+            u8::from_str_radix(text, 16).unwrap()
+        })
+        .collect()
+}
 
 #[test]
 fn bip39_wordlist_matches_pinned_protocol_artifact() {
@@ -161,8 +173,48 @@ fn cryptographic_test_vector_is_deterministic() {
     let initiator_identity_public = initiator_identity.identity();
     let responder_identity_public = responder_identity.identity();
 
+    assert_eq!(
+        initiator_identity_public.as_bytes().as_slice(),
+        hex_bytes("5c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84")
+    );
+    assert_eq!(
+        responder_identity_public.as_bytes().as_slice(),
+        hex_bytes("4ed32f63bf35f0eeefcb25f28a2e1fbdc873ae2835671b0c9460f5f12e4556a8")
+    );
+
     let initiator_ephemeral_public = initiator_ephemeral.public_key();
     let responder_ephemeral_public = responder_ephemeral.public_key();
+
+    assert_eq!(
+        initiator_ephemeral_public.as_slice(),
+        hex_bytes("e50c239bc204f1341664c9d9c50c6a0d0fff6fc79d9301f1e713aab2e0344b3f")
+    );
+    assert_eq!(
+        responder_ephemeral_public.as_slice(),
+        hex_bytes("d7b5e81d336e578b13b8d706e82d061e3038c96bce66cdcf50d566b96ddbba10")
+    );
+
+    let hello = HelloPayload {
+        cipher_suite: 1,
+        purpose: HandshakePurpose::Initial,
+        role: HelloRole::Initiator,
+        identity_public_key: initiator_identity_public,
+        ephemeral_public_key: initiator_ephemeral_public,
+        nonce: [0x55; 16],
+        previous_session_id: None,
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(
+        hello.payload,
+        hex_bytes(
+            "a700010101020003000458205c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de84055820e50c239bc204f1341664c9d9c50c6a0d0fff6fc79d9301f1e713aab2e0344b3f065055555555555555555555555555555555"
+        )
+    );
+    assert_eq!(
+        commit_hash(&hello.payload).as_slice(),
+        hex_bytes("99c899c4c5fc9c9fa8bdd59a1ac874724fb7ca8cdbb450c8550672837b686ed7")
+    );
 
     let initiator_shared = initiator_ephemeral
         .shared_secret(&responder_ephemeral_public)
@@ -173,6 +225,10 @@ fn cryptographic_test_vector_is_deterministic() {
 
     assert_eq!(initiator_shared, responder_shared);
     assert_ne!(initiator_shared.as_ref(), &[0u8; 32]);
+    assert_eq!(
+        initiator_shared.as_slice(),
+        hex_bytes("2ffc24cce9eed2a0d0357986878c0691154eb70589bef1afeb4fbf513170fa33")
+    );
 
     let transcript = Transcript {
         purpose: HandshakePurpose::Initial,
@@ -188,6 +244,12 @@ fn cryptographic_test_vector_is_deterministic() {
 
     let encoded = transcript.encode().unwrap();
     assert!(!encoded.is_empty());
+    assert_eq!(
+        encoded,
+        hex_bytes(
+            "ab000101010200030004010658205c9c6df261c9cb840475776aaefcd944b405328fab28f9b3a95ef40490d3de840758204ed32f63bf35f0eeefcb25f28a2e1fbdc873ae2835671b0c9460f5f12e4556a8085820e50c239bc204f1341664c9d9c50c6a0d0fff6fc79d9301f1e713aab2e0344b3f095820d7b5e81d336e578b13b8d706e82d061e3038c96bce66cdcf50d566b96ddbba100a50555555555555555555555555555555550b5066666666666666666666666666666666"
+        )
+    );
 
     // Encoding the same semantic transcript twice must produce identical
     // bytes; otherwise the transcript hash would not be interoperable.
@@ -195,6 +257,10 @@ fn cryptographic_test_vector_is_deterministic() {
 
     let hash = transcript_hash(&encoded);
     assert_eq!(hash, transcript_hash(&encoded));
+    assert_eq!(
+        hash.as_slice(),
+        hex_bytes("89fa686e4361198f1fc6e5423c2d47093ff35767d0e4d82ecc987c3d870ba910")
+    );
 
     // SAS indices must select exactly the words returned by sas_words().
     let indices = sas_indices(&hash);
@@ -207,6 +273,18 @@ fn cryptographic_test_vector_is_deterministic() {
 
     let initiator_signature = initiator_identity.sign_transcript(&hash, true);
     let responder_signature = responder_identity.sign_transcript(&hash, false);
+    assert_eq!(
+        initiator_signature.as_slice(),
+        hex_bytes(
+            "482810706bc520efd5226bc7d3335e8215be494bdcbd7e395ecadd9261827af1c8bf8fcda4f8d00b18c9661daab04e63bce1da3c47b136420b3f3e3fdc652305"
+        )
+    );
+    assert_eq!(
+        responder_signature.as_slice(),
+        hex_bytes(
+            "cb74a429ee682e5d6bb0d0db40d0edbb33e9966a84351641d7ef78e0c7b1c7386896ed45ebff592426fc77cfcf3670ea1ed0e2b6bf16d931d1e0c62d6f523707"
+        )
+    );
 
     verify_transcript_signature(
         &initiator_identity_public,
@@ -250,6 +328,27 @@ fn cryptographic_test_vector_is_deterministic() {
 
     let keys = derive_session_keys(&initiator_shared, &hash).unwrap();
 
+    assert_eq!(
+        keys.root_key.as_slice(),
+        hex_bytes("cbfc08b0b02adcc9822f57cff838a64fd296f9b41ff43a911b8fa17244ee6a4b")
+    );
+    assert_eq!(
+        keys.initiator_to_responder.as_slice(),
+        hex_bytes("1566950c0fee039df5f2e7fd3fa9872df0596b72d6fe989c5a0301970524dfce")
+    );
+    assert_eq!(
+        keys.responder_to_initiator.as_slice(),
+        hex_bytes("3cec6a7852d1a00656cb7dce6367d82536f26698b0fa4d7caecec5aa1c0af002")
+    );
+    assert_eq!(
+        keys.session_id.as_bytes().as_slice(),
+        hex_bytes("f9a69f3a26c7fd39528449beee9276b6")
+    );
+    assert_eq!(
+        keys.confirmation_key.as_slice(),
+        hex_bytes("702f701bdca427b87322a788c91e96c59aa07d0881df1b2d05ccd5a9a6e9dba1")
+    );
+
     assert_ne!(keys.root_key, [0u8; 32]);
     assert_ne!(keys.initiator_to_responder, [0u8; 32]);
     assert_ne!(keys.responder_to_initiator, [0u8; 32]);
@@ -261,6 +360,14 @@ fn cryptographic_test_vector_is_deterministic() {
 
     let initiator_confirmation = confirmation_mac(&keys.confirmation_key, &hash, true);
     let responder_confirmation = confirmation_mac(&keys.confirmation_key, &hash, false);
+    assert_eq!(
+        initiator_confirmation.as_slice(),
+        hex_bytes("43fadc097ee1f4d8af90ab599108d41346ed0bb602fdf74c65eda43264229e7e")
+    );
+    assert_eq!(
+        responder_confirmation.as_slice(),
+        hex_bytes("1583e4e8adc63d1c0b3c3fcc041d429902cbbc0c7c8e82fd5336d200426f80ac")
+    );
 
     verify_confirmation(&keys.confirmation_key, &hash, &initiator_confirmation, true).unwrap();
 
@@ -285,6 +392,14 @@ fn cryptographic_test_vector_is_deterministic() {
     let (message_key_0, chain_key_1) = derive_message_key(
         &keys.initiator_to_responder,
         DirectionId::InitiatorToResponder,
+    );
+    assert_eq!(
+        message_key_0.as_slice(),
+        hex_bytes("c005254c307357b6e07e7c7c5d185f78c6a5791ffdb07e6cc5c2b5bd823645b9")
+    );
+    assert_eq!(
+        chain_key_1.as_slice(),
+        hex_bytes("31b8b28b3b55f547c358a1febf3adb7fff78c6e776a7c3bd496ec8424155b712")
     );
     let (message_key_1, chain_key_2) =
         derive_message_key(&chain_key_1, DirectionId::InitiatorToResponder);

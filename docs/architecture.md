@@ -150,4 +150,4 @@ A process exit or transport loss destroys the session. Reconnecting always means
 
 ## Known gaps against spec 1.1
 
-Published known-answer vectors, recorded fuzzing runs, memory locking, and automated tests for zeroization and the exit wipe are open items; see the [conformance matrix](conformance-matrix.md).
+Recorded fuzzing runs, memory locking, and automated tests for zeroization and the exit wipe are open items; see the [conformance matrix](conformance-matrix.md). Published deterministic vectors are in [test-vectors.md](test-vectors.md).

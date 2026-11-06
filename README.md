@@ -48,7 +48,7 @@ The implementation includes:
 
 The [conformance matrix](docs/conformance-matrix.md) tracks protocol requirements against implementation and test coverage.
 
-There is still work to do. Outstanding items include published hexadecimal known-answer test vectors, recorded fuzzing corpora and runs, `mlock` memory locking, and an independent security review.
+There is still work to do. Outstanding items include recorded fuzzing corpora and runs, `mlock` memory locking, and an independent security review. Published deterministic protocol vectors are in [docs/test-vectors.md](docs/test-vectors.md).
 
 **RUXMSG has not undergone an independent security review and should not be considered production-secure.** Implemented features and passing tests are not substitutes for independent cryptographic and protocol analysis.
 

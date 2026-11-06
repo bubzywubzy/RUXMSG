@@ -87,7 +87,7 @@ Status meanings:
 | Area | Implementation | Evidence | Status |
 | --- | --- | --- | --- |
 | Identity seed only persisted | `core/src/storage.rs`, `cli/src/keyring_store.rs` | storage unit tests (fake store) | Implemented and tested |
-| Seed saved is read back and compared (§10.1) | `core/src/storage.rs` | storage unit test (forgetful store) | Implemented and tested; cannot prove persistence across a restart |
+| Persistent credential backend required (§10.1) | `core/src/storage.rs`, `cli/src/keyring_store.rs` | storage unit tests; supported native-backend allow-list | Implemented: persistence capability is required before load/save; unsupported platforms fail closed rather than accepting a fallback |
 | Real OS credential store persists across restarts | `cli/Cargo.toml`, `cli/src/keyring_store.rs` | manual (profile reloaded across runs on Linux Secret Service) | Unverified on other platforms |
 | No trust store, address book, history | whole workspace | code review | Implemented |
 | Initial chain keys and root key not retained | `core/src/machine.rs` | none | Implemented (the derived `SessionKeys` is dropped and zeroized after the ratchets exist); no test inspects it |
@@ -102,7 +102,7 @@ Status meanings:
 
 | Area | Status |
 | --- | --- |
-| Hex known-answer vectors (spec §12.1) | Planned: current tests assert properties, not fixed hex values |
+| Hex known-answer vectors (spec §12.1) | `docs/test-vectors.md`, `core/tests/conformance.rs` | Implemented: fixed inputs and hexadecimal outputs cover identities, DH, transcript, signatures, KDF, confirmations, chain keys, nonce, AAD, padding, and AEAD ciphertext |
 | Fuzz targets (close, DATA decrypt, CBOR, frame/stream, handshake incl. COMMIT, ratchet, engine inputs, config) | CI is configured to compile all targets and run 100-execution smoke campaigns; `fuzz/corpus/` remains git-ignored, and no campaign results are recorded in this repository |
 | Independent implementation interoperability | External |
 | Independent security review | External |
