@@ -14,6 +14,11 @@ use crate::error::{Error, Result};
 use crate::protocol::{FrameLength, MAX_FRAME_SIZE, MessageType, ProtocolVersion};
 
 pub const HEADER_SIZE: usize = 6;
+/// An encoded frame is byte-bounded, but a CBOR value can still be nested
+/// deeply enough to exhaust a thread stack.  The schemas in RUXMSG/1 need at
+/// most two levels (an outer map and scalar values); leave modest room for
+/// forward-compatible diagnostics while keeping hostile input stack-safe.
+const MAX_CBOR_NESTING: usize = 32;
 
 pub(crate) fn wipe_cbor_value(value: &mut Value) {
     match value {
@@ -137,6 +142,13 @@ impl Frame {
             ));
         }
 
+        // `ciborium::Value` is recursive.  Do a non-recursive structural pass
+        // before asking it to build a value tree so an otherwise small frame
+        // cannot turn into an unbounded parser/serializer/wiper call stack.
+        // This also rejects indefinite lengths before any deserialization
+        // allocation occurs.
+        validate_cbor_structure(payload)?;
+
         let mut cursor = Cursor::new(payload);
         let mut value: Value = ciborium::de::from_reader(&mut cursor)
             .map_err(|error| Error::Encoding(error.to_string()))?;
@@ -221,6 +233,111 @@ impl Frame {
     }
 }
 
+/// Validates CBOR item boundaries, definite lengths, shortest integer/length
+/// encodings, and nesting depth without constructing recursive values.
+///
+/// RUXMSG only admits unsigned integers, byte/text strings, arrays and maps
+/// at this layer; schema validation subsequently rejects types not used by a
+/// particular payload.  Tags and simple/floating values have no RUXMSG use
+/// and are rejected here.
+fn validate_cbor_structure(payload: &[u8]) -> Result<()> {
+    let mut position = 0usize;
+    // Each entry is the number of items remaining in a container.  The root
+    // is represented as a one-item synthetic container.
+    let mut remaining = vec![1usize];
+
+    while !remaining.is_empty() {
+        while remaining.last().is_some_and(|count| *count == 0) {
+            remaining.pop();
+        }
+        if remaining.is_empty() {
+            break;
+        }
+
+        let count = remaining.last_mut().expect("non-empty after check");
+        *count -= 1;
+
+        let initial = *payload.get(position).ok_or(Error::TruncatedFrame)?;
+        position += 1;
+        let major = initial >> 5;
+        let additional = initial & 0x1f;
+        let value = read_cbor_argument(payload, &mut position, additional)?;
+
+        match major {
+            // Unsigned and negative integers are structurally safe.  The
+            // typed schema rejects negative values wherever unsigned fields
+            // are required.
+            0 | 1 => {}
+            2 | 3 => {
+                let length = usize::try_from(value).map_err(|_| Error::NonCanonicalEncoding)?;
+                let end = position
+                    .checked_add(length)
+                    .ok_or(Error::NonCanonicalEncoding)?;
+                if end > payload.len() {
+                    return Err(Error::TruncatedFrame);
+                }
+                position = end;
+            }
+            4 | 5 => {
+                let items = if major == 4 {
+                    value
+                } else {
+                    value.checked_mul(2).ok_or(Error::NonCanonicalEncoding)?
+                };
+                let items = usize::try_from(items).map_err(|_| Error::NonCanonicalEncoding)?;
+                if items > 0 {
+                    if remaining.len() >= MAX_CBOR_NESTING {
+                        return Err(Error::NonCanonicalEncoding);
+                    }
+                    remaining.push(items);
+                }
+            }
+            // Tags, simple values, floats, and break have no valid use in
+            // any RUXMSG/1 schema.  Indefinite lengths are also rejected by
+            // `read_cbor_argument`.
+            _ => return Err(Error::NonCanonicalEncoding),
+        }
+    }
+
+    if position == payload.len() {
+        Ok(())
+    } else {
+        Err(Error::NonCanonicalEncoding)
+    }
+}
+
+fn read_cbor_argument(payload: &[u8], position: &mut usize, additional: u8) -> Result<u64> {
+    let bytes = match additional {
+        0..=23 => return Ok(u64::from(additional)),
+        24 => 1,
+        25 => 2,
+        26 => 4,
+        27 => 8,
+        // 28-30 are reserved and 31 denotes an indefinite-length item.
+        _ => return Err(Error::NonCanonicalEncoding),
+    };
+
+    let end = position.checked_add(bytes).ok_or(Error::TruncatedFrame)?;
+    let encoded = payload.get(*position..end).ok_or(Error::TruncatedFrame)?;
+    *position = end;
+
+    let value = encoded
+        .iter()
+        .fold(0u64, |value, byte| (value << 8) | u64::from(*byte));
+    let shortest = match bytes {
+        1 => value >= 24,
+        2 => value > u64::from(u8::MAX),
+        4 => value > u64::from(u16::MAX),
+        8 => value > u64::from(u32::MAX),
+        _ => false,
+    };
+    if shortest {
+        Ok(value)
+    } else {
+        Err(Error::NonCanonicalEncoding)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +375,24 @@ mod tests {
         let unsorted = Frame::new(MessageType::Data, vec![0xa2, 0x01, 0x01, 0x00, 0x02]).unwrap();
         assert_eq!(
             unsorted.validate_cbor_map(),
+            Err(Error::NonCanonicalEncoding)
+        );
+    }
+
+    #[test]
+    fn rejects_indefinite_and_excessively_nested_cbor_before_value_decode() {
+        // An indefinite map is forbidden by RUXMSG deterministic CBOR.
+        assert_eq!(
+            Frame::validate_cbor_map_payload(&[0xbf, 0xff]),
+            Err(Error::NonCanonicalEncoding)
+        );
+
+        // A one-megabyte DATA frame can otherwise encode enough nested
+        // containers to overflow the process stack in a recursive CBOR AST.
+        let mut nested = vec![0x81; MAX_CBOR_NESTING + 1];
+        nested.push(0x00);
+        assert_eq!(
+            Frame::validate_cbor_map_payload(&nested),
             Err(Error::NonCanonicalEncoding)
         );
     }
