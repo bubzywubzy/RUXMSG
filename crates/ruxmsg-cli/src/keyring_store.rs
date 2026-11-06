@@ -34,6 +34,25 @@ impl KeyringSecretStore {
 }
 
 impl SecretStore for KeyringSecretStore {
+    fn ensure_persistent(&self) -> Result<()> {
+        // `keyring` is built with native backends only in this project
+        // (Credential Manager, Keychain, and Secret Service). Do not silently
+        // accept another platform or an in-memory/file fallback: identity
+        // persistence is a protocol requirement, not a convenience.
+        #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+        {
+            Ok(())
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        {
+            Err(Error::Storage(
+                "no verified persistent native credential-store backend for this platform"
+                    .to_string(),
+            ))
+        }
+    }
+
     fn get_secret(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
         match self.entry(account)?.get_secret() {
             Ok(bytes) => Ok(Some(Zeroizing::new(bytes))),

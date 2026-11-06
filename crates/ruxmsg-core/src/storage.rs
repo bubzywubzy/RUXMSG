@@ -32,6 +32,14 @@ use crate::error::{Error, Result};
 /// Implementations must keep secret material inside the operating system's
 /// credential mechanism rather than application-controlled files.
 pub trait SecretStore {
+    /// Verifies that this is a real OS-backed persistent secret store.
+    ///
+    /// An in-memory, file, or test fallback is not acceptable for RUXMSG/1:
+    /// a successful same-process read-back cannot establish persistence across
+    /// restart. Implementations must fail closed unless they can attest to a
+    /// supported native credential backend.
+    fn ensure_persistent(&self) -> Result<()>;
+
     /// Loads secret bytes for an account.
     ///
     /// Returns `None` when the account does not exist.
@@ -63,6 +71,8 @@ impl<S: SecretStore> IdentityKeyStore<S> {
     ///
     /// Returns `Ok(None)` when this profile has never been initialized.
     pub fn load(&self) -> Result<Option<IdentityKeypair>> {
+        self.secrets.ensure_persistent()?;
+
         let Some(bytes) = self.secrets.get_secret(&self.account)? else {
             return Ok(None);
         };
@@ -81,6 +91,8 @@ impl<S: SecretStore> IdentityKeyStore<S> {
     /// silently drops writes is reported instead of trusted (spec §10.1). This
     /// cannot prove the backend survives a restart.
     pub fn save(&mut self, identity: &IdentityKeypair) -> Result<()> {
+        self.secrets.ensure_persistent()?;
+
         let seed = Zeroizing::new(identity.to_bytes());
 
         self.secrets.set_secret(&self.account, seed.as_slice())?;
@@ -124,6 +136,10 @@ mod tests {
     struct FakeSecretStore(Rc<RefCell<HashMap<String, Vec<u8>>>>);
 
     impl SecretStore for FakeSecretStore {
+        fn ensure_persistent(&self) -> Result<()> {
+            Ok(())
+        }
+
         fn get_secret(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
             Ok(self.0.borrow().get(account).cloned().map(Zeroizing::new))
         }
@@ -174,6 +190,10 @@ mod tests {
     struct ForgetfulStore;
 
     impl SecretStore for ForgetfulStore {
+        fn ensure_persistent(&self) -> Result<()> {
+            Ok(())
+        }
+
         fn get_secret(&self, _account: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
             Ok(None)
         }
@@ -188,5 +208,30 @@ mod tests {
         let mut store = IdentityKeyStore::new(ForgetfulStore, "identity");
 
         assert!(store.save(&IdentityKeypair::generate()).is_err());
+    }
+
+    struct NonPersistentStore;
+
+    impl SecretStore for NonPersistentStore {
+        fn ensure_persistent(&self) -> Result<()> {
+            Err(Error::Storage("volatile fallback".to_string()))
+        }
+
+        fn get_secret(&self, _account: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+            unreachable!("persistence check must run before secret access")
+        }
+
+        fn set_secret(&mut self, _account: &str, _value: &[u8]) -> Result<()> {
+            unreachable!("persistence check must run before secret access")
+        }
+    }
+
+    #[test]
+    fn rejects_a_store_that_cannot_attest_to_persistence() {
+        let store = IdentityKeyStore::new(NonPersistentStore, "identity");
+
+        assert!(
+            matches!(store.load(), Err(Error::Storage(message)) if message == "volatile fallback")
+        );
     }
 }
