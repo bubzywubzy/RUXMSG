@@ -63,7 +63,7 @@ Rekey COMMITs cannot be authenticated until the candidate handshake binds them. 
 - **Display sanitization:** Peer bytes are sanitized on ingestion via `sanitize_for_display` (escaping Unicode `Cc` control characters and bidi overrides `U+202A..=U+202E`, `U+2066..=U+2069` as `\u{xxxx}`) and tabs (`\t`) are expanded to spaces before storing in scrollback.
 - **Process hardening (`ruxmsg-cli`):**
   - Runs on a single-threaded Tokio runtime (`current_thread`) to prevent secret copies across worker thread stacks.
-  - Disables core dumps (`RLIMIT_CORE = 0` on Unix) and marks the process non-dumpable (`PR_SET_DUMPABLE = 0` on Linux).
+  - Disables core dumps (`RLIMIT_CORE = 0` on Unix) and marks the process non-dumpable (`PR_SET_DUMPABLE = 0` on Linux). Windows has no application-controlled equivalent; the client emits an explicit startup warning instead of claiming comparable hardening.
   - Installs a panic hook and signal handlers (`SIGTERM`, `SIGHUP`, `SIGINT`) that send `CloseReason::Shutdown`, drop and zeroize all scrollbacks, restore the terminal, and emit ANSI screen + scrollback clear (`\x1b[2J\x1b[3J\x1b[H`) if any session or SAS was displayed.
   - **Known limitation:** Memory locking (`mlock` / `VirtualLock`) is not yet implemented, so OS swap could retain pages.
 

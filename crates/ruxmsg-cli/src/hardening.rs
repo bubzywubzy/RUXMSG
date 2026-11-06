@@ -11,7 +11,12 @@ pub(crate) fn apply() -> Vec<&'static str> {
     #[cfg(unix)]
     let mut warnings = Vec::new();
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let warnings = vec![
+        "Windows does not expose an application-controlled equivalent to Linux non-dumpable mode; crash-dump/inspection hardening is unavailable",
+    ];
+
+    #[cfg(all(not(unix), not(windows)))]
     let warnings = Vec::new();
 
     #[cfg(unix)]
